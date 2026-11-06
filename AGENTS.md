@@ -45,7 +45,8 @@ pqv/frametx.py, rlp.py             EIP-8141 frame tx codec (chain-1337 / ethrex 
 pqv/jardin.py                      guardian keys over upstream JARDIN signers; entry encoding; vault_message (domain PQ-Vault/v2)
 pqv/state.py                       DurableLeafStore (burn-before-sign), AnchoredLeafStore (chain-anchored)
 pqv/devnet.py                      CLI: deploy-infra, new-guardians, deploy-vault, transfer, rotate, recover, attack-stale-restore
-pqv/server.py, app/index.html      local UI (127.0.0.1 only)
+pqv/server.py, app/index.html      wallet website (127.0.0.1 only): /api/wallet, /api/plan, /api/send|rotate|recover
+                                   run as background jobs polled at /api/jobs/<id>; keys never reach the browser
 pqv/receipts.py                    regenerates docs/RECEIPTS.md from the chain
 pqv/_shim/Crypto/Hash/keccak.py    stdlib KECCAK-256 adapter so JARDIN's Python imports work without pycryptodome
 research/                          policies.py, sim.py, run_experiments.py, sweeps.py, crash_test.py, mempool_admission.py, REPORT.md, results/

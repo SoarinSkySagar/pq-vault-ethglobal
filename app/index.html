@@ -1,178 +1,437 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PQ-Vault — 2-of-3 post-quantum guardian wallet</title>
+<title>PQ-Vault</title>
+<meta name="color-scheme" content="light">
 <style>
-  :root { --bg:#0e1116; --panel:#161b22; --line:#2a313c; --text:#e6edf3; --muted:#8b949e; --ok:#3fb950; --bad:#f85149; --acc:#7aa2f7; --warn:#d29922; }
+  :root {
+    --paper: #EEF1F4;
+    --sheet: #F8FAFB;
+    --ink: #1B2533;
+    --slate: #5B6B7F;
+    --rule: #CBD3DC;
+    --leaf: #2F6F5E;
+    --leaf-soft: #D6E6E0;
+    --amber: #B9771A;
+    --amber-soft: #F3E3C7;
+    --red: #B4372F;
+    --red-soft: #F2D9D6;
+    --sans: "Avenir Next", "Segoe UI Variable Text", "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
   * { box-sizing: border-box; }
-  body { margin:0; font:14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
-  header { display:flex; align-items:baseline; gap:16px; padding:18px 24px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
-  header h1 { margin:0; font-size:20px; }
-  header .sub { color:var(--muted); }
-  .badge { padding:2px 8px; border:1px solid var(--line); border-radius:999px; font-size:12px; color:var(--muted); }
-  main { display:grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap:16px; padding:16px 24px 40px; }
-  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
-  section h2 { margin:0 0 10px; font-size:15px; }
-  .wide { grid-column: 1 / -1; }
-  .kv { display:grid; grid-template-columns: 150px 1fr; gap:4px 10px; }
-  .kv div:nth-child(odd) { color:var(--muted); }
-  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12.5px; word-break: break-all; }
-  .guardians { display:grid; grid-template-columns: repeat(3, 1fr); gap:10px; }
-  .g { border:1px solid var(--line); border-radius:8px; padding:10px; }
-  .g h3 { margin:0 0 6px; font-size:14px; display:flex; justify-content:space-between; }
-  .bar { height:6px; background:#222a35; border-radius:4px; overflow:hidden; margin:6px 0; }
-  .bar > span { display:block; height:100%; background:var(--acc); }
-  .ok { color:var(--ok); } .bad { color:var(--bad); } .muted { color:var(--muted); } .warn { color: var(--warn); }
-  label { display:block; color:var(--muted); margin:8px 0 3px; font-size:12px; }
-  input, select { width:100%; padding:7px 9px; background:#0d1117; color:var(--text); border:1px solid var(--line); border-radius:6px; }
-  button { margin-top:10px; padding:7px 12px; background:#21262d; color:var(--text); border:1px solid var(--line); border-radius:6px; cursor:pointer; }
-  button.primary { background:#1f6feb; border-color:#1f6feb; }
-  button:disabled { opacity:.5; cursor:wait; }
-  .row { display:flex; gap:8px; flex-wrap:wrap; }
-  table { width:100%; border-collapse:collapse; font-size:12.5px; }
-  th, td { text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
-  th { color:var(--muted); font-weight:500; }
-  a { color: var(--acc); text-decoration: none; } a:hover { text-decoration: underline; }
-  pre { background:#0d1117; border:1px solid var(--line); border-radius:6px; padding:8px; overflow:auto; max-height:260px; font-size:12px; }
+  html { background: var(--paper); color: var(--ink); font: 16px/1.5 var(--sans); font-variant-numeric: tabular-nums; }
+  body { margin: 0; }
+  button, input { font: inherit; color: inherit; }
+  :focus-visible { outline: 3px solid var(--leaf); outline-offset: 2px; }
+
+  header.bar { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px 24px; padding: 20px 40px 16px;
+    border-bottom: 1px solid var(--rule); }
+  .brand { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; margin: 0; }
+  .brand small { font-weight: 500; color: var(--slate); font-size: 15px; margin-left: 10px; letter-spacing: 0; }
+  .net { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; font-size: 14px; color: var(--slate); }
+  .chip { border: 1px solid var(--rule); border-radius: 999px; padding: 2px 10px; background: var(--sheet); }
+  .chip.ok { border-color: var(--leaf); color: var(--leaf); }
+  .chip.warn { border-color: var(--amber); color: var(--amber); }
+
+  main { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); max-width: 1280px; margin: 0 auto; }
+  .col { padding: 32px 40px; min-width: 0; }
+  .col + .col { border-left: 1px solid var(--rule); }
+  .wide { grid-column: 1 / -1; border-top: 1px solid var(--rule); }
+  .col.wide { border-left: 0; }
+  h2 { font-size: 19px; margin: 0 0 14px; letter-spacing: -0.005em; }
+  .muted { color: var(--slate); }
+  .small { font-size: 14px; }
+  .mono { font-family: var(--mono); font-size: 0.92em; }
+
+  .balance { margin: 0 0 6px; font-size: clamp(40px, 6vw, 64px); font-weight: 600; letter-spacing: -0.03em; line-height: 1.05; }
+  .balance .unit { font-size: 0.45em; font-weight: 500; color: var(--slate); margin-left: 8px; letter-spacing: 0; }
+  .addr { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .addr code { font-family: var(--mono); font-size: 15px; word-break: break-all; }
+  .policy { max-width: 60ch; margin: 0 0 32px; }
+
+  form { border-top: 1px solid var(--rule); padding-top: 24px; }
+  label.f { display: block; font-weight: 600; font-size: 15px; margin: 0 0 6px; }
+  input[type=text] { width: 100%; padding: 10px 12px; border: 1px solid var(--rule); border-radius: 6px; background: var(--sheet); }
+  input[type=text]:focus-visible { outline-offset: 0; }
+  .row { display: grid; grid-template-columns: 1fr 200px; gap: 16px; margin-bottom: 18px; }
+  .field-err { color: var(--red); font-size: 14px; min-height: 1.4em; margin-top: 4px; }
+  fieldset { border: 0; padding: 0; margin: 0 0 18px; }
+  legend { font-weight: 600; font-size: 15px; margin-bottom: 8px; padding: 0; }
+  .pick { display: flex; gap: 10px; flex-wrap: wrap; }
+  .pick button { border: 1px solid var(--rule); background: var(--sheet); border-radius: 6px; padding: 8px 16px; cursor: pointer; }
+  .pick button[aria-pressed=true] { border-color: var(--ink); background: var(--ink); color: var(--sheet); }
+
+  .btn { border: 1px solid var(--ink); background: var(--ink); color: var(--sheet); border-radius: 6px; padding: 11px 20px;
+    font-weight: 600; cursor: pointer; }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn.quiet { background: transparent; color: var(--ink); border-color: var(--rule); font-weight: 500; padding: 6px 12px; font-size: 14px; }
+  .btn.danger { background: var(--red); border-color: var(--red); }
+
+  /* the transaction, frame by frame */
+  .frames { list-style: none; margin: 0 0 18px; padding: 0; border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; background: var(--sheet); }
+  .frames li { display: grid; grid-template-columns: 84px 1fr auto; gap: 14px; align-items: baseline; padding: 12px 16px; }
+  .frames li + li { border-top: 1px solid var(--rule); }
+  .frames .kind { font-weight: 700; font-size: 14px; letter-spacing: .02em; }
+  .frames .gas { font-size: 14px; color: var(--slate); white-space: nowrap; }
+  .frames li.live { box-shadow: inset 4px 0 0 var(--amber); }
+  .frames li.ok { box-shadow: inset 4px 0 0 var(--leaf); }
+  .frames li.ok .gas { color: var(--leaf); }
+  .frames li.bad { box-shadow: inset 4px 0 0 var(--red); }
+  .note { border-left: 3px solid var(--amber); padding: 6px 12px; margin: 0 0 14px; background: var(--amber-soft); border-radius: 0 6px 6px 0; font-size: 15px; }
+  .progress { margin: 16px 0 0; padding: 0; list-style: none; font-size: 15px; }
+  .progress li { padding: 3px 0 3px 22px; position: relative; }
+  .progress li::before { content: ""; position: absolute; left: 4px; top: 11px; width: 8px; height: 8px; border-radius: 50%; background: var(--rule); }
+  .progress li.done::before { background: var(--leaf); }
+  .progress li.now::before { background: var(--amber); }
+  .progress li.err { color: var(--red); }
+  .progress li.err::before { background: var(--red); }
+  .result { margin-top: 14px; padding: 12px 16px; border-radius: 8px; border: 1px solid var(--leaf); background: var(--leaf-soft); }
+  .result.bad { border-color: var(--red); background: var(--red-soft); }
+
+  /* guardians, drawn as their one-time leaves */
+  .g { padding: 18px 0; }
+  .g + .g { border-top: 1px solid var(--rule); }
+  .g-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .g-head h3 { margin: 0; font-size: 17px; }
+  .tag { font-size: 13px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--rule); color: var(--slate); }
+  .tag.ok { border-color: var(--leaf); color: var(--leaf); }
+  .tag.warn { border-color: var(--amber); color: var(--amber); }
+  .tag.bad { border-color: var(--red); color: var(--red); }
+  .leaves { display: grid; grid-template-columns: repeat(16, 1fr); gap: 3px; max-width: 360px; margin-bottom: 8px; }
+  .leaves.few { grid-template-columns: repeat(8, 1fr); max-width: 180px; }
+  .leaf { aspect-ratio: 1; border-radius: 2px; border: 1px solid var(--rule); background: var(--sheet); }
+  .leaf.used { background: var(--leaf); border-color: var(--leaf); }
+  .leaf.last { border-color: var(--amber); background: var(--amber-soft); }
+  .leaves.revoked .leaf { background: var(--red-soft); border-color: var(--red); }
+  .g-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .inline-confirm { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--red); border-radius: 6px; background: var(--red-soft); font-size: 15px; }
+  .demo { margin-top: 10px; font-size: 15px; padding: 10px 12px; border: 1px solid var(--rule); border-radius: 6px; background: var(--sheet); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 15px; }
+  th { text-align: left; font-weight: 600; color: var(--slate); padding: 8px 12px 8px 0; border-bottom: 1px solid var(--rule); }
+  td { padding: 10px 12px 10px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  td.num { white-space: nowrap; }
+  .empty { padding: 20px 0; color: var(--slate); }
+  .sig { display: inline-block; font-size: 13px; padding: 0 6px; border-radius: 4px; background: var(--leaf-soft); color: var(--leaf); margin-right: 4px; }
+  .sig.spx { background: var(--amber-soft); color: var(--amber); }
+
+  footer { max-width: 1280px; margin: 0 auto; padding: 20px 40px 40px; font-size: 14px; color: var(--slate); }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; }
+    .col { padding: 24px 20px; }
+    .col + .col { border-left: 0; border-top: 1px solid var(--rule); }
+    header.bar { padding: 16px 20px; }
+    .net { margin-left: 0; }
+    .row { grid-template-columns: 1fr; }
+    .frames li { grid-template-columns: 70px 1fr; }
+    .frames .gas { grid-column: 2; }
+    .hide-sm { display: none; }
+    footer { padding: 20px; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1>PQ-Vault</h1>
-  <span class="sub">2-of-3 post-quantum guardian wallet · EIP-8141 frame transactions · ERC-8421 alt mempool · JARDIN hash-based signatures · no ECDSA</span>
-  <span class="badge" id="net">…</span>
-  <span class="badge" id="head">…</span>
+<header class="bar">
+  <h1 class="brand">PQ-Vault<small>2-of-3 post-quantum wallet</small></h1>
+  <div class="net" id="net" aria-live="polite"><span class="chip">connecting…</span></div>
 </header>
+
 <main>
-  <section>
-    <h2>Vault</h2>
-    <div class="kv" id="vault"></div>
+  <section class="col" aria-labelledby="vault-h">
+    <h2 id="vault-h" class="sr">Vault</h2>
+    <p class="balance" id="balance">–<span class="unit">ETH</span></p>
+    <div class="addr"><code id="address">no vault deployed</code><button class="btn quiet" id="copy" type="button">Copy address</button></div>
+    <p class="policy muted">Any two of the three guardians must approve a payment. Every approval is a hash-based
+      JARDIN signature, built to resist quantum computers; this vault has no ECDSA key at all.</p>
+
+    <form id="send" novalidate>
+      <h2>Send</h2>
+      <div class="row">
+        <div>
+          <label class="f" for="to">Recipient</label>
+          <input type="text" id="to" placeholder="0x…" autocomplete="off" spellcheck="false">
+          <div class="field-err" id="to-err"></div>
+        </div>
+        <div>
+          <label class="f" for="amount">Amount in ETH</label>
+          <input type="text" id="amount" value="0.001" inputmode="decimal" autocomplete="off">
+          <div class="field-err" id="amount-err"></div>
+        </div>
+      </div>
+      <fieldset>
+        <legend>Approve with two guardians</legend>
+        <div class="pick" id="pick">
+          <button type="button" data-g="0" aria-pressed="true">Guardian 0</button>
+          <button type="button" data-g="1" aria-pressed="true">Guardian 1</button>
+          <button type="button" data-g="2" aria-pressed="false">Guardian 2</button>
+        </div>
+      </fieldset>
+
+      <div id="renew-notes"></div>
+      <ol class="frames" id="frames" aria-label="The transaction, frame by frame"></ol>
+      <button class="btn" id="send-btn" type="submit">Send</button>
+      <ul class="progress" id="progress" aria-live="polite"></ul>
+      <div id="result" aria-live="polite"></div>
+    </form>
   </section>
 
-  <section>
-    <h2>Send (needs 2 of 3 guardians)</h2>
-    <label>Recipient</label><input id="to" placeholder="0x…">
-    <label>Amount (ETH, devnet)</label><input id="amt" value="0.001">
-    <div class="row">
-      <div style="flex:1"><label>Approving guardians</label>
-        <select id="approvers"><option value="0,1">0 + 1</option><option value="0,2">0 + 2</option><option value="1,2">1 + 2</option></select></div>
-      <div style="flex:1"><label>Second guardian signs</label>
-        <select id="second"><option value="compact">compact (stateful JARDIN FORS, 2.7 KB)</option><option value="stateless">stateless (JARDIN SPX, 6.5 KB)</option></select></div>
-    </div>
-    <div class="muted">Frames: VERIFY (guardian A, execution) + VERIFY (guardian B, payment), then one SENDER frame consumes both leaves and executes.</div>
-    <button class="primary" id="send">Sign with 2 guardians &amp; send via alt mempool</button>
-    <div id="sendOut" class="muted" style="margin-top:8px"></div>
+  <section class="col" aria-labelledby="g-h">
+    <h2 id="g-h">Guardians</h2>
+    <p class="muted small" style="margin-top:-6px">Each guardian key holds 128 one-time leaves, and every approval uses one.
+      When a key is down to its last 8, it is renewed automatically before it signs, approved by the other two guardians.</p>
+    <div id="guardians"></div>
   </section>
 
-  <section class="wide">
-    <h2>Guardians — stateful signing state vs. chain-anchored high-water mark</h2>
-    <div class="guardians" id="guardians"></div>
-    <pre id="actionOut" style="display:none"></pre>
-  </section>
-
-  <section class="wide">
-    <h2>Activity (devnet receipts)</h2>
-    <table><thead><tr><th>action</th><th>tx</th><th>block</th><th>status</th><th>gas</th><th>frames</th></tr></thead><tbody id="rcpts"></tbody></table>
-  </section>
-
-  <section class="wide">
-    <h2>Research: does a stateful PQ wallet survive crashes, stale backups, clones and rollback?</h2>
-    <div class="muted" style="margin-bottom:6px">Real JARDIN signatures under scripted faults (research/run_experiments.py). Worst case over seeds. γ = most messages signed by one few-time leaf; exposure = blocks during which a reused leaf was still accepted on chain.</div>
-    <table><thead><tr><th>scenario</th><th>signer / chain</th><th>worst γ</th><th>lowest forgery cost (bits)</th><th>double-accepted on chain</th><th>exposure blocks (mean)</th><th>refusals (mean)</th><th>re-slots (mean)</th></tr></thead><tbody id="research"></tbody></table>
+  <section class="col wide" aria-labelledby="a-h">
+    <h2 id="a-h">Activity</h2>
+    <div id="activity"><p class="empty">Loading…</p></div>
   </section>
 </main>
+
+<footer>
+  Signing happens in the local PQ-Vault process on this machine; this page never sees a secret key.
+  Devnet only. <span id="mempool-url"></span>
+</footer>
+
 <script>
+"use strict";
 const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const short = (h) => h ? h.slice(0, 10) + "…" + h.slice(-6) : "";
-let S = null;
+const fmt = (n) => Number(n).toLocaleString("en-US");
+let W = null, busy = false;
+const picked = new Set([0, 1]);
 
 async function api(path, body) {
   const r = await fetch(path, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
-  const j = await r.json();
-  if (!r.ok) throw new Error(j.error || r.statusText);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `request failed (${r.status})`);
   return j;
 }
 
-function txLink(hash) {
-  if (S && S.explorer) return `<a class="mono" target="_blank" rel="noopener" href="${S.explorer}/tx/${hash}">${short(hash)}</a>`;
-  return `<span class="mono" title="${hash}">${short(hash)}</span>`;
+// amounts, exactly (BigInt wei)
+function ethToWei(s) {
+  s = s.trim();
+  if (!/^\d+(\.\d{1,18})?$/.test(s)) return null;
+  const [i, f = ""] = s.split(".");
+  return BigInt(i) * 10n ** 18n + BigInt((f + "0".repeat(18)).slice(0, 18));
+}
+function weiToEth(w, dp = 6) {
+  w = BigInt(w);
+  const i = w / 10n ** 18n, f = (w % 10n ** 18n).toString().padStart(18, "0").slice(0, dp).replace(/0+$/, "");
+  return i.toLocaleString("en-US") + (f ? "." + f : "");
 }
 
+// ---------- wallet ----------
 async function refresh() {
-  try { S = await api("/api/status"); } catch (e) { $("vault").innerHTML = `<div class="bad">${e.message}</div>`; return; }
-  $("net").textContent = `network: ${S.network}`;
-  $("head").textContent = `block ${S.head}`;
-  const v = S.vault || {}, d = S.deployment || {};
-  $("vault").innerHTML = `
-    <div>address</div><div class="mono">${v.address || "not deployed"}</div>
-    <div>balance</div><div>${v.balanceWei ? (Number(v.balanceWei) / 1e18).toFixed(6) + " ETH" : "-"}</div>
-    <div>nonce</div><div>${v.nonce ?? "-"}</div>
-    <div>LeafLedger</div><div class="mono">${d.ledger || "-"}</div>
-    <div>JARDIN FORS / SPX</div><div class="mono">${short(d.forsVerifier)} / ${short(d.spxVerifier)}</div>
-    <div>staking registry</div><div class="mono">${d.staking || "-"}</div>
-    <div>tx submitted to</div><div class="mono">${S.mempool}</div>`;
-  $("guardians").innerHTML = S.guardians.map(g => {
-    const used = g.ledgerHighWaterMark === "revoked" ? g.qMax : g.ledgerHighWaterMark;
+  try { W = await api("/api/wallet"); } catch (e) {
+    $("net").innerHTML = `<span class="chip warn">Cannot reach the local node: ${esc(e.message)}</span>`; return;
+  }
+  const mpOk = /BUDGET-010/.test(W.mempool.kind);
+  $("net").innerHTML =
+    `<span class="chip">${esc(W.network)} devnet, chain ${W.chainId}</span>` +
+    `<span class="chip">block ${fmt(W.block)}</span>` +
+    `<span class="chip ${mpOk ? "ok" : "warn"}" title="${esc(W.mempool.url)}">${esc(W.mempool.kind)}</span>`;
+  $("mempool-url").textContent = `Mempool: ${W.mempool.url}`;
+  if (W.vault) {
+    $("balance").innerHTML = `${weiToEth(W.vault.balanceWei, 4)}<span class="unit">ETH</span>`;
+    $("address").textContent = W.vault.address;
+  }
+  renderGuardians();
+  if (!busy) renderPlan();
+  renderActivity();
+}
+
+function leafGrid(g) {
+  const n = g.leaves;
+  let cells = "";
+  for (let i = 0; i < n; i++) {
+    const used = i < g.used, last = !used && i >= n - Math.min(W.rotateAt, Math.max(1, n >> 2));
+    cells += `<span class="leaf${used ? " used" : last ? " last" : ""}"></span>`;
+  }
+  return `<div class="leaves${n <= 8 ? " few" : ""}${g.revoked ? " revoked" : ""}" role="img"
+    aria-label="${g.remaining} of ${n} one-time leaves left">${cells}</div>`;
+}
+
+const openPanel = {};  // guardian index -> "recover" | {html}
+function renderGuardians() {
+  if (!W) return;
+  $("guardians").innerHTML = W.guardians.map((g) => {
+    const state = g.revoked ? `<span class="tag bad">key revoked</span>`
+      : !g.active ? `<span class="tag bad">not active in this vault</span>`
+      : g.renewDue ? `<span class="tag warn">renews before it next signs</span>`
+      : `<span class="tag ok">active</span>`;
+    const left = g.revoked ? "This key was revoked. It is renewed automatically the next time this guardian approves."
+      : `${g.remaining} of ${g.leaves} one-time leaves left`;
+    const others = [0, 1, 2].filter((x) => x !== g.index).join(" and ");
+    let panel = "";
+    if (openPanel[g.index] === "recover") panel = `<div class="inline-confirm">
+        Replace guardian ${g.index}'s keys? Use this when its device is lost. Guardians ${others} approve new keys,
+        and every key guardian ${g.index} held before is revoked.
+        <div class="g-actions"><button class="btn danger" type="button" data-act="recover-go" data-g="${g.index}">Replace guardian ${g.index}</button>
+        <button class="btn quiet" type="button" data-act="close" data-g="${g.index}">Keep current keys</button></div></div>`;
+    else if (openPanel[g.index] && openPanel[g.index].html) panel = `<div class="demo">${openPanel[g.index].html}</div>`;
+    const dis = busy ? "disabled" : "";
     return `<div class="g">
-      <h3><span>Guardian ${g.index}</span><span class="${g.activeInVault ? "ok" : "bad"}">${g.activeInVault ? "active" : "inactive"}</span></h3>
-      <div class="muted">compact slot <span class="mono">${short(g.slotId)}</span> (#${g.slotCount}${g.replaced ? `, replaced ×${g.replaced}` : ""})</div>
-      <div class="bar"><span style="width:${(100 * used / g.qMax).toFixed(1)}%"></span></div>
-      <div>next leaf on device: <b>${g.nextLeafLocal}</b> / ${g.qMax}</div>
-      <div>chain high-water mark: <b class="${g.ledgerHighWaterMark === "revoked" ? "bad" : ""}">${g.ledgerHighWaterMark}</b></div>
-      <div class="row">
-        <button onclick="act('/api/rotate', {guardian:${g.index}})">Rotate slot</button>
-        <button onclick="act('/api/recover', {lost:${g.index}})">Lost device → recover</button>
-        <button onclick="act('/api/demo/stale-restore', {guardian:${g.index}})">Restore stale backup</button>
-      </div></div>`;
+      <div class="g-head"><h3>Guardian ${g.index}</h3><span class="muted small">key ${g.keyNumber}${g.replaced ? `, device replaced ${g.replaced} time${g.replaced > 1 ? "s" : ""}` : ""}</span>${state}</div>
+      ${leafGrid(g)}
+      <div class="small muted">${left}</div>
+      <div class="g-actions">
+        <button class="btn quiet" type="button" data-act="rotate" data-g="${g.index}" ${dis} title="Approved by guardians ${others}">Renew key now</button>
+        <button class="btn quiet" type="button" data-act="recover" data-g="${g.index}" ${dis}>Replace lost device</button>
+        <button class="btn quiet hide-sm" type="button" data-act="demo" data-g="${g.index}" ${dis}>Try an old backup</button>
+      </div>${panel}</div>`;
   }).join("");
-  $("rcpts").innerHTML = (S.receipts || []).map(r => `<tr>
-      <td>${r.label}</td><td>${txLink(r.txHash)}</td><td>${r.block}</td>
-      <td class="${r.status === "0x1" ? "ok" : "bad"}">${r.status === "0x1" ? "success" : r.status}</td>
-      <td>${r.gasUsed}</td>
-      <td>${(r.frameReceipts || []).map((f, i, a) => `${i === a.length - 1 ? "SENDER" : "VERIFY"}:${f.status === "0x1" || f.status === 1 ? "ok" : f.status}`).join(" ")}</td></tr>`).join("") || `<tr><td colspan=6 class="muted">no transactions yet</td></tr>`;
 }
 
-async function act(path, body) {
-  const out = $("actionOut");
-  out.style.display = "block";
-  out.textContent = `running ${path} … (signing with JARDIN keys, simulating, submitting to the alt mempool)`;
-  document.querySelectorAll("button").forEach(b => b.disabled = true);
-  try { out.textContent = JSON.stringify(await api(path, body), null, 1); }
-  catch (e) { out.textContent = "error: " + e.message; }
-  document.querySelectorAll("button").forEach(b => b.disabled = false);
-  refresh();
+$("guardians").addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button[data-act]"); if (!b) return;
+  const g = Number(b.dataset.g), act = b.dataset.act;
+  if (act === "close") { delete openPanel[g]; return renderGuardians(); }
+  if (act === "recover") { openPanel[g] = "recover"; return renderGuardians(); }
+  if (act === "recover-go") { delete openPanel[g]; return runJob("/api/recover", { lost: g }, `Replacing guardian ${g}`); }
+  if (act === "rotate") return runJob("/api/rotate", { guardian: g }, `Renewing guardian ${g}'s key`);
+  if (act === "demo") {
+    openPanel[g] = { html: "Restoring an old copy of this guardian's device and trying to sign…" }; renderGuardians();
+    try {
+      const r = await api("/api/demo/stale-restore", { guardian: g });
+      openPanel[g] = { html: `A device restored from an old backup would sign with leaf ${r.baselineSigner.leafChosen},
+        which is already used on chain (the chain has recorded up to leaf ${r.chainHighWaterMark}).
+        The vault ${r.baselineSigner.rejected ? "<strong>rejects</strong> that signature" : "<strong>did not reject</strong> that signature"}.
+        PQ-Vault's own signer checks the chain first and would use leaf ${r.pqVaultSigner.leafChosen} instead. Nothing was sent.` };
+    } catch (e) { openPanel[g] = { html: `<span style="color:var(--red)">${esc(e.message)}</span>` }; }
+    renderGuardians();
+  }
+});
+
+// ---------- send: the plan, drawn as the transaction's frames ----------
+$("pick").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button[data-g]"); if (!b || busy) return;
+  const g = Number(b.dataset.g);
+  if (picked.has(g)) picked.delete(g); else { if (picked.size === 2) picked.delete([...picked][0]); picked.add(g); }
+  for (const x of $("pick").querySelectorAll("button")) x.setAttribute("aria-pressed", String(picked.has(Number(x.dataset.g))));
+  renderPlan();
+});
+
+let planSeq = 0, lastPlan = null;
+async function renderPlan() {
+  const seq = ++planSeq, pair = [...picked].sort();
+  $("send-btn").textContent = pair.length === 2 ? `Send with guardians ${pair[0]} and ${pair[1]}` : "Choose two guardians";
+  $("send-btn").disabled = pair.length !== 2 || busy;
+  if (pair.length !== 2) { $("frames").innerHTML = ""; $("renew-notes").innerHTML = ""; return; }
+  let p; try { p = await api("/api/plan", { approvers: pair }); } catch { return; }
+  if (seq !== planSeq) return;
+  lastPlan = p;
+  $("renew-notes").innerHTML = p.renewFirst.map((r) =>
+    `<p class="note">Guardian ${r.guardian} has ${r.remaining} leaf${r.remaining === 1 ? "" : "s"} left, so its key is renewed first,
+     approved by guardians ${r.approvers.join(" and ")}. That is one extra transaction before the payment.</p>`).join("");
+  drawFrames(p.frames, {});
 }
 
-$("send").onclick = async () => {
-  const wei = BigInt(Math.round(parseFloat($("amt").value) * 1e9)) * 1000000000n;
-  const pair = $("approvers").value.split(",").map(Number);
-  const stateless = $("second").value === "stateless" ? [pair[1]] : [];
-  $("sendOut").textContent = "signing with guardians " + pair.join(" + ") + ", simulating, submitting…";
-  $("send").disabled = true;
-  try {
-    const r = await api("/api/transfer", { to: $("to").value.trim(), wei: wei.toString(), approvers: pair, stateless });
-    $("sendOut").innerHTML = `included in block ${parseInt(r.receipt.blockNumber, 16)} — ${txLink(r.txHash)} — status <span class="${r.receipt.status === "0x1" ? "ok" : "bad"}">${r.receipt.status}</span>`;
-  } catch (e) { $("sendOut").innerHTML = `<span class="bad">${e.message}</span>`; }
-  $("send").disabled = false;
-  refresh();
+function drawFrames(frames, st) {
+  $("frames").innerHTML = frames.map((f, i) => {
+    const sig = f.kind === "stateless" ? "stateless signature, 6.5 KB" : f.kind === "compact" ? "one-time leaf, 2.7 KB" : "";
+    const who = f.guardian === null ? "" : `<strong>Guardian ${f.guardian}</strong>, ${sig}: `;
+    const gas = st.gas ? `${fmt(st.gas[i])} gas` : `up to ${fmt(f.gasLimit)} gas`;
+    return `<li class="${st.cls ? st.cls[i] : ""}"><span class="kind">${f.name}</span><span>${who}${esc(f.does)}</span><span class="gas">${gas}</span></li>`;
+  }).join("");
+}
+
+// ---------- background jobs (send, renew, replace) ----------
+const STEP_TEXT = {
+  renew: (e) => `Renewing a key first: ${e.text}`,
+  fallback: (e) => `Using a stateless signature: ${e.text}`,
+  signing: (e) => `Signing on this machine: ${e.text}`,
+  simulated: (e) => e.ok ? "Checked against the chain: every frame succeeds" : "The transaction failed in simulation",
+  submitting: () => "Submitted to the alt mempool, waiting for a block",
+  included: (e) => `${e.label}: included in block ${fmt(e.block)}, ${fmt(e.gasUsed)} gas`,
 };
 
-async function research() {
-  try {
-    const R = await api("/api/research");
-    const pick = [["durable", false, "JARDIN-style burn-before-sign, no on-chain state"], ["durable", true, "same + LeafLedger"],
-                  ["anchored_w1", true, "PQ-Vault: anchored signer + LeafLedger"], ["anchored_w1", "revoke", "PQ-Vault + equivocation revocation"]];
-    $("research").innerHTML = R.rows.filter(r => pick.some(p => p[0] === r.policy && p[1] === r.ledger)).map(r => {
-      const lab = pick.find(p => p[0] === r.policy && p[1] === r.ledger)[2];
-      return `<tr><td>${r.scenario}</td><td>${lab}</td><td class="${r.worst_gamma > 1 ? "warn" : "ok"}">${r.worst_gamma}</td>
-        <td>${r.worst_min_bits}</td><td class="${r.total_double_accepted ? "bad" : "ok"}">${r.total_double_accepted}</td>
-        <td>${r.mean_exposure_steps}</td><td>${r.mean_refused}</td><td>${r.mean_reslots}</td></tr>`;
-    }).join("") || `<tr><td colspan=8 class="muted">run research/run_experiments.py</td></tr>`;
-  } catch (e) {}
+async function runJob(path, body, title) {
+  if (busy) return;
+  busy = true; renderGuardians(); $("send-btn").disabled = true;
+  $("result").innerHTML = "";
+  $("progress").innerHTML = `<li class="now">${esc(title)}…</li>`;
+  let job;
+  try { job = (await api(path, body)).job; } catch (e) {
+    $("progress").innerHTML = `<li class="err">${esc(e.message)}</li>`; busy = false; renderGuardians(); renderPlan(); return;
+  }
+  const isSend = path === "/api/send";
+  if (isSend && lastPlan) drawFrames(lastPlan.frames, { cls: ["live", "live", "live"] });
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 900));
+    let j; try { j = await api("/api/jobs/" + job); } catch { continue; }
+    const shown = j.events.filter((e) => STEP_TEXT[e.type]);
+    $("progress").innerHTML = shown.map((e, i) =>
+      `<li class="${i === shown.length - 1 && j.state === "running" ? "now" : "done"}">${esc(STEP_TEXT[e.type](e))}</li>`).join("")
+      + (j.state === "error" ? `<li class="err">${esc(j.error)}</li>` : "");
+    if (j.state === "running") continue;
+    if (isSend && lastPlan) {
+      const sims = j.events.filter((e) => e.type === "simulated"), sim = sims[sims.length - 1];
+      drawFrames(lastPlan.frames, j.state === "done"
+        ? { cls: ["ok", "ok", "ok"], gas: sim && sim.frames.length === 3 ? sim.frames : null }
+        : { cls: ["bad", "bad", "bad"] });
+    }
+    if (j.state === "done" && j.result && j.result.txHash) {
+      const ok = j.result.status === "0x1";
+      $("result").innerHTML = `<div class="result${ok ? "" : " bad"}">${ok ? (isSend ? "Sent." : "Done.") : "Included, but the transaction reverted."}
+        Block ${fmt(j.result.block)}, transaction <span class="mono" title="${esc(j.result.txHash)}">${short(j.result.txHash)}</span>.</div>`;
+    }
+    break;
+  }
+  busy = false;
+  await refresh();
 }
-refresh(); research(); setInterval(refresh, 6000);
+
+$("send").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const to = $("to").value.trim(), wei = ethToWei($("amount").value);
+  $("to-err").textContent = /^0x[0-9a-fA-F]{40}$/.test(to) ? "" : "Enter a 0x address with 40 hex characters.";
+  $("amount-err").textContent = wei === null || wei <= 0n ? "Enter an amount such as 0.001."
+    : W && W.vault && wei > BigInt(W.vault.balanceWei) ? "The vault holds less than this." : "";
+  if ($("to-err").textContent || $("amount-err").textContent) return;
+  const pair = [...picked].sort();
+  runJob("/api/send", { to, wei: wei.toString(), approvers: pair },
+         `Sending ${$("amount").value.trim()} ETH with guardians ${pair[0]} and ${pair[1]}`);
+});
+
+$("copy").addEventListener("click", async () => {
+  if (!W || !W.vault) return;
+  try { await navigator.clipboard.writeText(W.vault.address); $("copy").textContent = "Copied"; }
+  catch { $("copy").textContent = "Select the address to copy it"; }
+  setTimeout(() => ($("copy").textContent = "Copy address"), 1800);
+});
+
+// ---------- activity ----------
+function describe(r) {
+  let m;
+  if ((m = r.label.match(/rotate guardian (\d)/))) return `Renewed guardian ${m[1]}'s key`;
+  if ((m = r.label.match(/recover lost guardian (\d)/))) return `Replaced guardian ${m[1]}`;
+  if (/transfer/.test(r.label)) return "Payment";
+  return r.label;
+}
+async function renderActivity() {
+  let rows; try { rows = await api("/api/activity"); } catch { return; }
+  if (!rows.length) { $("activity").innerHTML = `<p class="empty">No transactions yet. Send one with the form above.</p>`; return; }
+  $("activity").innerHTML = `<table><thead><tr><th>What</th><th>Approved by</th><th class="hide-sm">Frame gas</th><th>Block</th><th>Transaction</th></tr></thead><tbody>` +
+    rows.slice(0, 30).map((r) => `<tr>
+      <td>${esc(describe(r))}${r.status === "0x1" ? "" : ` <span class="tag bad">reverted</span>`}</td>
+      <td>${(r.guardians || []).map((g, i) => {
+          const spx = (r.kinds || [])[i] === "stateless";
+          return `<span class="sig${spx ? " spx" : ""}" title="${spx ? "stateless signature" : "one-time leaf"}">guardian ${g}${spx ? ", stateless" : ""}</span>`;
+        }).join("")}</td>
+      <td class="hide-sm small muted">${r.frames.map((f) => fmt(f.gas)).join(" / ")}</td>
+      <td class="num">${fmt(r.block)}</td>
+      <td><span class="mono" title="${esc(r.txHash)}">${short(r.txHash)}</span></td></tr>`).join("") + `</tbody></table>`;
+}
+
+refresh();
+setInterval(() => { if (!busy) refresh(); }, 6000);
 </script>
 </body>
 </html>

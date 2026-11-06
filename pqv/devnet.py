@@ -409,6 +409,7 @@ def vault_call(net: Net, calls, approvers=(0, 1), stateless=(), label="vault cal
             print(f"stateless fallback: guardian {i} has no compact leaf left; it signs with its SPX key")
     kinds = eff
     tx = build_vault_tx(net, vault, calls, kinds)
+    print("signing: " + ", ".join(f"guardian {i} ({k})" for i, k in zip(idx, kinds)))
     sh = sign_vault_tx(tx, signers, kinds)
     sim = simulate(tx)
     # `valid`/`violation` are ethrex's *canonical* (EIP-8141 public mempool) verdict. PQ-Vault's VERIFY frames
@@ -419,6 +420,7 @@ def vault_call(net: Net, calls, approvers=(0, 1), stateless=(), label="vault cal
     print("simulate:", json.dumps(brief))
     if sim.get("executionStatus") not in (None, "success"):
         raise RuntimeError(f"simulated execution failed: {brief}")
+    print(f"submitting: to {net.cfg['sidecar']}")
     out = submit(net, tx)
     rc = out["receipt"]
     print(f"{label}: tx {out['txHash']} status {rc['status']} block {int(rc['blockNumber'], 16)} "

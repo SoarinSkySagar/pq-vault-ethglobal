@@ -33,7 +33,8 @@ Built for ETHGlobal Mumbai 2026. Devnet only — research prototype, not audited
 ```
 contracts/          Foundry project: PQVault, PQVaultFactory, LeafLedger, PQVaultFrameOps.yul (+ tests)
 pqv/                Python toolkit: frame-tx codec, JARDIN key wrapper, leaf-state stores, devnet driver, UI server
-app/                Single-page UI (no external scripts or trackers)
+app/                Wallet website: balance, send with two guardians (shown frame by frame), guardian key health
+                    as 128-leaf grids, renew / replace guardians, activity. No external scripts, fonts or trackers
 research/           Simulator, crash experiment, results/, REPORT.md
 infra/              local-net.sh: one-command local network (Kurtosis ethrex eip8141-tracer + Lighthouse + skandha);
                     sidecar-budget010/ (ERC-8421 per-entity budgets for the skandha sidecar)
@@ -64,7 +65,7 @@ python3.12 -m pqv.devnet local deploy-vault --fund 2 --stake 0.02               
 python3.12 -m pqv.devnet local transfer 0x<to> 1000000000000000 --guardians 0,1 [--stateless 1]
 python3.12 -m pqv.devnet local rotate 0 && python3.12 -m pqv.devnet local recover 2
 python3.12 -m pqv.devnet local attack-stale-restore
-python3.12 -m pqv.server local       # UI on http://127.0.0.1:8141
+python3.12 -m pqv.server local       # wallet website on http://127.0.0.1:8141 (signing stays in this process)
 infra/local-net.sh status | down
 ```
 
