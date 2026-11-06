@@ -2,9 +2,17 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>PQ Wallet</title>
 <meta name="color-scheme" content="light">
+<meta name="theme-color" content="#3B5BA9" id="theme-color">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icons/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="PQ Wallet">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <style>
   :root {
     --page: #E6EBF1;
@@ -35,7 +43,7 @@
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--slate); }
   .dot.on { background: var(--plus); }
   .dot.off { background: var(--bad); }
-  .icon-btn { margin-left: auto; border: 1px solid var(--rule); background: var(--panel); border-radius: 8px; padding: 4px 10px; cursor: pointer; font-size: 13px; }
+  .icon-btn { border: 1px solid var(--rule); background: var(--panel); border-radius: 8px; padding: 4px 10px; cursor: pointer; font-size: 13px; }
 
   .screen { padding: 20px 20px 24px; }
   .who { display: flex; align-items: center; gap: 12px; }
@@ -56,9 +64,6 @@
   .act .circle { width: 44px; height: 44px; border-radius: 50%; background: var(--acc); color: #fff; display: grid; place-items: center; font-size: 20px; line-height: 1; }
   .act:disabled { opacity: .45; cursor: not-allowed; }
 
-  .tabs { display: flex; border-bottom: 1px solid var(--rule); margin: 0 -20px; padding: 0 20px; }
-  .tab { border: 0; background: none; padding: 10px 14px; cursor: pointer; color: var(--slate); border-bottom: 2px solid transparent; margin-bottom: -1px; }
-  .tab[aria-selected=true] { color: var(--ink); border-bottom-color: var(--acc); font-weight: 600; }
   .list { list-style: none; margin: 0 -20px; padding: 0; }
   .list li { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 12px 20px; border-bottom: 1px solid var(--rule); }
   .list .t { font-weight: 600; text-transform: none; }
@@ -144,6 +149,48 @@
   .muted { color: var(--slate); }
   .small { font-size: 13px; }
 
+  /* ---- app shell: bottom tab bar, touch ---- */
+  html { -webkit-tap-highlight-color: transparent; -webkit-text-size-adjust: 100%; }
+  button { touch-action: manipulation; }
+  .top .net { margin-right: auto; }
+  .nav { position: sticky; bottom: 0; z-index: 2; display: grid; grid-template-columns: repeat(3, 1fr); background: var(--panel);
+    border-top: 1px solid var(--rule); padding-bottom: env(safe-area-inset-bottom); }
+  .nav[hidden] { display: none; }
+  .nav button { position: relative; min-height: 56px; border: 0; background: none; cursor: pointer; color: var(--slate); font-size: 12px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; }
+  .nav button[aria-current=page] { color: var(--acc); font-weight: 600; }
+  .nav svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .nav .badge { position: absolute; top: 6px; left: calc(50% + 6px); margin: 0; }
+  h2.section { font-size: 15px; margin: 0 0 4px; }
+  .pair { text-align: center; }
+  .pair .avatar { margin: 0 auto; }
+  .pair .in { text-align: center; font-family: var(--mono); font-size: 18px; letter-spacing: 0.08em; text-transform: uppercase; }
+  .qr { width: 220px; max-width: 100%; margin: 6px auto 10px; background: #fff; border: 1px solid var(--rule); border-radius: 12px; padding: 8px; }
+  .qr svg { display: block; width: 100%; height: auto; }
+  .code { font-family: var(--mono); font-size: 20px; letter-spacing: 0.08em; font-weight: 600; }
+  ol.how { padding-left: 20px; margin: 10px 0 0; text-align: left; }
+  ol.how li { margin-bottom: 8px; }
+  .mono { font-family: var(--mono); }
+  .wrap { overflow-wrap: anywhere; }
+
+  /* ---- phones and the installed app: full screen, no card ---- */
+  @media (max-width: 560px), (display-mode: standalone) {
+    html, body { background: var(--panel); }
+    body { padding: 0; display: block; overscroll-behavior-y: none; }
+    .wallet { max-width: none; min-height: 100vh; min-height: 100dvh; border: 0; border-radius: 0; display: flex; flex-direction: column; }
+    #view { flex: 1; }
+    .top { position: sticky; top: 0; z-index: 2; background: var(--panel); padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
+      padding-left: calc(16px + env(safe-area-inset-left)); padding-right: calc(16px + env(safe-area-inset-right)); }
+    .screen { padding-left: calc(20px + env(safe-area-inset-left)); padding-right: calc(20px + env(safe-area-inset-right)); }
+    .in, .pair .in { font-size: 16px; }  /* 16px stops iOS zooming into a field */
+    .back { padding: 10px 0; margin: -10px 0 4px; }
+    .icon-btn { min-height: 34px; }
+    .contact { padding: 6px 12px 6px 6px; }
+    .contact .avatar { width: 24px; height: 24px; }
+    .max { min-height: 44px; }
+    .btn { padding: 14px 16px; }
+  }
+
   @media (prefers-reduced-motion: no-preference) {
     .screen { animation: in .18s ease-out; }
     @keyframes in { from { opacity: 0; transform: translateY(4px); } }
@@ -154,9 +201,11 @@
 <div class="wallet" id="wallet">
   <div class="top">
     <button class="net" id="net-pill" type="button" title="Network settings"><span class="dot" id="dot"></span><span id="net-text">Connecting…</span></button>
+    <button class="icon-btn" id="phone-btn" type="button" hidden>Phone</button>
     <button class="icon-btn" id="settings-btn" type="button">Network</button>
   </div>
   <div id="view"></div>
+  <nav class="nav" id="nav" aria-label="Sections" hidden></nav>
 </div>
 
 <script>
@@ -167,11 +216,28 @@ const short = (a) => a ? a.slice(0, 6) + "…" + a.slice(-4) : "";
 const ACCENTS = ["#2F6F5E", "#3B5BA9", "#7C4A9E", "#2C7DA0", "#6A7B2E", "#A04E68"];
 let S = null, A = [], screen = "home", tab = "activity", busy = false, sendDraft = { to: "", amount: "" }, jobView = null;
 let V = null, vaultId = null, vaultMsg = null, newVault = { name: "", picked: [] }, propDraft = { to: "", amount: "" }, jobReturn = "home";
+let needPair = false, pairMsg = "", P = null;
+
+// A phone reaches the wallet computer over the LAN and proves it was paired with the wallet's pairing code. The code
+// arrives in the QR link's #fragment (never sent to a server or logged) or is typed in, and is kept on this phone.
+const PAIR_KEY = "pq-wallet-pairing-code";
+const pairCode = () => { try { return localStorage.getItem(PAIR_KEY) || ""; } catch { return ""; } };
+const setPairCode = (c) => { try { c ? localStorage.setItem(PAIR_KEY, c) : localStorage.removeItem(PAIR_KEY); } catch { /* private mode */ } };
+function takePairLink() {
+  const m = location.hash.match(/pair=([A-Za-z0-9-]+)/);
+  if (m) { setPairCode(m[1]); history.replaceState(null, "", location.pathname); return true; }
+  return false;
+}
+takePairLink();
+window.addEventListener("hashchange", () => { if (takePairLink()) refresh(); });
+const isLocal = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
 
 async function api(path, body) {
-  const r = await fetch(path, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
+  const headers = body ? { "content-type": "application/json" } : {};
+  if (pairCode()) headers.authorization = "Bearer " + pairCode();
+  const r = await fetch(path, body ? { method: "POST", headers, body: JSON.stringify(body) } : { headers });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || `request failed (${r.status})`);
+  if (!r.ok) { const e = new Error(j.error || `request failed (${r.status})`); e.pair = !!j.pair; throw e; }
   return j;
 }
 
@@ -210,12 +276,20 @@ const accentFor = (addr) => ACCENTS[parseInt((addr || "0x00").slice(2, 4), 16) %
 
 // ---- data ----
 async function refresh() {
-  try { S = await api("/api/state"); } catch (e) { S = null; }
+  try { S = await api("/api/state"); needPair = false; pairMsg = ""; }
+  catch (e) {
+    S = null;
+    if (e.pair) {  // forget a rejected code, so polling does not count as more wrong guesses
+      if (pairCode()) { pairMsg = e.message; setPairCode(""); }
+      needPair = true;
+    }
+  }
   const n = S && S.network;
-  $("dot").className = "dot " + (n && n.connected ? "on" : "off");
-  $("net-text").textContent = !n ? "Wallet offline" : n.connected ? `PQ devnet, chain ${n.chainId}` : "Not connected";
+  $("dot").className = "dot " + (n && n.connected ? "on" : needPair ? "" : "off");
+  $("net-text").textContent = needPair ? "Not paired" : !n ? "Wallet offline" : n.connected ? `PQ devnet, chain ${n.chainId}` : "Not connected";
   if (S && S.account) {
     document.documentElement.style.setProperty("--acc", accentFor(S.account.address));
+    $("theme-color").content = accentFor(S.account.address);
     try { A = await api("/api/activity"); } catch { /* keep the last list */ }
   }
   document.title = S ? `${cap(S.name)}'s PQ Wallet` : "PQ Wallet";
@@ -223,13 +297,27 @@ async function refresh() {
   if (!busy && !isTyping()) render();
 }
 const cap = (s) => s ? s[0].toUpperCase() + s.slice(1) : s;
+const here = () => S && S.remote ? "on your wallet computer, not on this phone" : "on this computer";
 const isTyping = () => ["send", "review", "propose", "newvault", "network"].includes(screen);
 
 // ---- screens ----
 function render() {
   const v = $("view");
-  if (!S) { v.innerHTML = `<div class="screen center"><p>The wallet process is not running.</p><p class="muted small">Start it with infra/wallets.sh start ${"&lt;name&gt;"}.</p></div>`; return; }
+  const home = !!(S && S.network.connected && S.account && screen === "home");
+  $("nav").hidden = !home;
+  if (home) $("nav").innerHTML = navBar();
+  $("phone-btn").hidden = !S || S.remote;
+  $("settings-btn").hidden = !S;
+  if (!S && needPair) { v.innerHTML = pairScreen(); return; }
+  if (!S) {
+    v.innerHTML = isLocal ? `<div class="screen center"><p>The wallet process is not running.</p><p class="muted small">Start it with infra/wallets.sh start ${"&lt;name&gt;"}.</p></div>`
+      : `<div class="screen center"><p>Cannot reach your wallet computer.</p><p class="muted small">Check that it is on, that the wallet runs with
+          infra/wallets.sh start --lan, and that this phone is on the same Wi-Fi. Your keys are on that computer, not on this phone.</p>
+          <button class="btn ghost" type="button" data-do="retry" style="margin-top:8px">Try again</button></div>`;
+    return;
+  }
   if (screen === "network") return v.innerHTML = networkScreen();
+  if (screen === "phone") return v.innerHTML = phoneScreen();
   if (!S.network.connected) { v.innerHTML = networkScreen(true); return; }
   if (!S.account) { v.innerHTML = setupScreen(); return; }
   v.innerHTML = { home: homeScreen, send: sendScreen, review: reviewScreen, receive: receiveScreen, job: jobScreen,
@@ -239,8 +327,20 @@ function render() {
   if (screen === "newvault") $("vname").value = newVault.name;
 }
 
+const NAV = [
+  ["activity", "Wallet", '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h13A2.5 2.5 0 0 1 21 7.5v9a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"/><path d="M15 12h3"/>'],
+  ["vaults", "Vaults", '<path d="M12 3l8 3v5.5c0 4.6-3.3 8.4-8 9.5-4.7-1.1-8-4.9-8-9.5V6z"/><path d="M9 12l2 2 4-4"/>'],
+  ["keys", "Keys", '<circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2 2M14 9l2 2"/>'],
+];
+function navBar() {
+  return NAV.map(([k, label, icon]) => `<button type="button" data-tab="${k}" ${tab === k ? 'aria-current="page"' : ""}>
+    <svg viewBox="0 0 24 24" aria-hidden="true">${icon}</svg>${label}${k === "vaults" ? vaultBadge() : ""}</button>`).join("");
+}
+
 function homeScreen() {
   const a = S.account;
+  if (tab === "vaults") return `<div class="screen"><h2>Shared vaults</h2>${vaultsList()}</div>`;
+  if (tab === "keys") return `<div class="screen"><h2>Keys</h2>${keysList()}</div>`;
   return `<div class="screen">
     <div class="who">${avatar(a.address)}<div><h1>${esc(S.name)}</h1>
       <button class="addr-btn" type="button" data-copy="${esc(a.address)}" title="Copy address">${short(a.address)}, copy</button></div></div>
@@ -250,12 +350,8 @@ function homeScreen() {
       <button class="act" type="button" data-go="receive"><span class="circle">↓</span>Receive</button>
       <button class="act" type="button" data-do="faucet"><span class="circle">+</span>Add test ETH</button>
     </div>
-    <div class="tabs" role="tablist">
-      <button class="tab" role="tab" type="button" data-tab="activity" aria-selected="${tab === "activity"}">Activity</button>
-      <button class="tab" role="tab" type="button" data-tab="vaults" aria-selected="${tab === "vaults"}">Vaults${vaultBadge()}</button>
-      <button class="tab" role="tab" type="button" data-tab="keys" aria-selected="${tab === "keys"}">Keys</button>
-    </div>
-    ${tab === "activity" ? activityList() : tab === "vaults" ? vaultsList() : keysList()}
+    <h2 class="section">Activity</h2>
+    ${activityList()}
   </div>`;
 }
 
@@ -275,7 +371,7 @@ function keysList() {
       <strong>Key ${k.index + 1}</strong>${k.renewals ? `<span class="muted small">, renewed ${k.renewals}×</span>` : ""}
       <div class="bar"><span style="width:${(100 * k.remaining / k.leaves).toFixed(1)}%"></span></div>
       <div class="small muted">${k.remaining} of ${k.leaves} signatures left before it renews itself</div></div>`).join("")}
-    <p class="note">Your account is a smart contract guarded by three post-quantum keys stored on this computer. Every
+    <p class="note">Your account is a smart contract guarded by three post-quantum keys stored ${here()}. Every
       payment is signed by two of them. Each key can sign ${S.keys[0] ? S.keys[0].leaves : 128} times, then renews
       automatically. There is no seed phrase and no ECDSA key.</p></div>`;
 }
@@ -287,7 +383,7 @@ function sendScreen() {
     <form id="send-form" novalidate>
       <div class="field"><label class="f" for="to">To</label>
         <input class="in mono" id="to" placeholder="0x…" autocomplete="off" spellcheck="false">
-        ${cs ? `<div class="contacts" aria-label="Other wallets on this computer">${cs}</div>` : ""}
+        ${cs ? `<div class="contacts" aria-label="Other wallets">${cs}</div>` : ""}
         <div class="err" id="to-err"></div></div>
       <div class="field"><label class="f" for="amt">Amount</label>
         <div class="amount-row"><input class="in" id="amt" placeholder="0.0" inputmode="decimal" autocomplete="off"><button class="max" type="button" id="max">Max</button></div>
@@ -307,7 +403,7 @@ function reviewScreen() {
       <div class="r"><span class="k">Amount</span><span class="vv"><strong>${eth(ethToWei(sendDraft.amount), 18)} ETH</strong></span></div>
       <div class="r"><span class="k">Network fee</span><span class="vv">about ${quote ? eth(quote.feeWei, 5) : "…"} ETH</span></div>
     </div>
-    <p class="pq">Two of your three post-quantum keys will sign this payment on this computer. The network checks both
+    <p class="pq">Two of your three post-quantum keys will sign this payment ${S.remote ? "on your wallet computer" : "on this computer"}. The network checks both
       signatures before your account pays any fee.</p>
     <div class="btns"><button class="btn ghost" type="button" data-go="home">Cancel</button><button class="btn" type="button" data-do="confirm">Confirm</button></div></div>`;
 }
@@ -379,7 +475,7 @@ function vaultScreen() {
       <div class="two"><button class="btn" type="button" data-go="propose">Propose payment</button>
         <button class="btn ghost" type="button" data-deposit="${esc(V.address)}">Deposit</button></div>`;
   } else if (V.invited) {
-    top = `<p class="msg">${esc(cap(V.creator))} invited you. Accepting creates your key for this vault on this computer.</p>
+    top = `<p class="msg">${esc(cap(V.creator))} invited you. Accepting creates your key for this vault ${here()}.</p>
       <div class="two"><button class="btn ghost" type="button" data-go="home">Not now</button><button class="btn" type="button" data-join="${V.id}">Accept</button></div>`;
   } else if (joined === 3 && V.status === "inviting") {
     top = `<p class="msg">Everyone accepted. Create the vault on chain (the devnet pays the 0.02 ETH mempool stake and adds 0.5 test ETH).</p>
@@ -435,7 +531,8 @@ function receiveScreen() {
   return `<div class="screen recv"><button class="back" type="button" data-go="home" style="display:block">← Back</button>
     ${avatar(a, "big")}<h2>Receive ETH</h2><p class="muted small">Share this address to receive ETH on chain ${S.network.chainId}.</p>
     <code>${a.slice(2).match(/.{1,4}/g).map((g, i) => (i === 0 ? "0x" : "") + g).join(" ")}</code>
-    <button class="btn" type="button" data-copy="${esc(a)}">Copy address</button></div>`;
+    <button class="btn" type="button" data-copy="${esc(a)}">Copy address</button>
+    ${navigator.share ? `<button class="btn ghost" type="button" data-share="${esc(a)}" style="margin-top:10px">Share address</button>` : ""}</div>`;
 }
 
 function setupScreen() {
@@ -444,7 +541,7 @@ function setupScreen() {
   const infra = S.network.infra ? "" : `<p class="small" style="color:var(--bad)">This network has no PQ-Vault contracts yet. Run infra/local-net.sh up first.</p>`;
   return `<div class="screen center">${avatar(hexOf(S.name), "big")}
     <h2 style="margin-top:14px">Create ${esc(cap(S.name))}'s wallet</h2>
-    <p class="muted">Your account will be a smart contract guarded by three post-quantum keys kept on this computer.
+    <p class="muted">Your account will be a smart contract guarded by three post-quantum keys kept ${here()}.
       Any two of them sign each payment, so there is no seed phrase to write down.</p>
     ${stale}${infra}
     <button class="btn" type="button" data-do="create" ${S.network.infra ? "" : "disabled"}>Create wallet</button>
@@ -460,8 +557,41 @@ function networkScreen(forced) {
       <div class="field"><label class="f" for="rpc">Node RPC URL</label><input class="in mono" id="rpc" value="${esc(n.rpc)}" spellcheck="false"></div>
       <div class="field"><label class="f" for="mp">Alt mempool URL</label><input class="in mono" id="mp" value="${esc(n.mempool)}" spellcheck="false">
         <div class="small muted" style="margin-top:6px">Payments go to this ERC-8421 mempool. It must allow staked accounts more than 100,000 validation gas.</div></div>
+      ${S.remote ? `<p class="small muted">These URLs are used by your wallet computer, not by this phone.</p>` : ""}
       <div class="err" id="net-err"></div>
-      <button class="btn" type="submit">Save and connect</button></form></div>`;
+      <button class="btn" type="submit">Save and connect</button></form>
+    ${S.remote ? `<button class="btn ghost" type="button" data-do="unpair" style="margin-top:12px">Unpair this phone</button>` : ""}</div>`;
+}
+
+function pairScreen() {
+  return `<div class="screen pair">${avatar(hexOf(location.host), "big")}<h2 style="margin-top:14px">Pair this phone</h2>
+    <p class="muted">Enter the pairing code shown on the wallet computer (open the wallet there and choose Phone), or scan its QR code.</p>
+    <form id="pair-form" novalidate><div class="field"><input class="in" id="pcode" placeholder="XXXX-XXXX-XXXX" autocomplete="one-time-code"
+      autocapitalize="characters" spellcheck="false" maxlength="20" aria-label="Pairing code"></div>
+      <div class="err">${esc(pairMsg)}</div><button class="btn" type="submit">Pair</button></form>
+    <p class="note">The phone is only a screen. Keys and signing stay on the wallet computer.</p></div>`;
+}
+
+function phoneScreen() {
+  const back = `<button class="back" type="button" data-go="home">← Back</button>`;
+  if (!P) return `<div class="screen">${back}<p class="muted">Loading…</p></div>`;
+  if (!P.enabled) return `<div class="screen">${back}<h2>Use this wallet on your phone</h2>
+    <p>Phone access is off. Restart this wallet with it on:</p><p class="msg mono small">infra/wallets.sh stop<br>infra/wallets.sh start --lan ${esc(S.name)} …</p>
+    <p class="note">The phone becomes a screen for this wallet over your Wi-Fi. The keys and the signing stay on this computer.</p></div>`;
+  return `<div class="screen center">${back.replace('class="back"', 'class="back" style="display:block"')}<h2>Use ${esc(cap(S.name))}'s wallet on a phone</h2>
+    ${P.qr ? `<div class="qr" role="img" aria-label="QR code for the phone link">${P.qr}</div>` : ""}
+    <p class="small mono wrap" style="margin:0">${esc(P.url)}</p>
+    <p class="small muted" style="margin:12px 0 2px">Pairing code</p><p class="code" style="margin:0">${esc(P.code)}</p>
+    <ol class="how small">
+      <li>Once per phone, install the devnet certificate: open <span class="mono wrap">${esc(P.caUrl)}</span> (accept the warning this one time).
+        Android: Settings, Security, Install a certificate, CA certificate. iPhone: Settings, Profile Downloaded, Install, then
+        General, About, Certificate Trust Settings, turn it on.</li>
+      <li>Scan the QR code with the phone (same Wi-Fi), then choose Install app or Add to Home Screen.</li>
+      <li>On iPhone, open the app from the home screen and enter the pairing code.</li>
+    </ol>
+    <p class="note" style="text-align:left">Android over USB needs no certificate: run <span class="mono">adb reverse tcp:${location.port} tcp:${location.port}</span>
+      and open <span class="mono">http://localhost:${location.port}</span> on the phone. Anyone with the pairing code on your network can use this wallet;
+      keep it to yourself.</p></div>`;
 }
 
 function jobScreen() {
@@ -534,6 +664,7 @@ async function watchJob(id, title, doneHtml) {
 document.addEventListener("click", async (ev) => {
   const t = ev.target.closest("button"); if (!t) return;
   if (t.id === "settings-btn" || t.id === "net-pill") { screen = "network"; return render(); }
+  if (t.id === "phone-btn") { screen = "phone"; P = null; render(); try { P = await api("/api/pair"); } catch { P = { enabled: false }; } return render(); }
   if (t.dataset.go) {
     if (busy && screen === "job" && jobView && jobView.running) return;
     if (t.dataset.go === "vault" && vaultId) return openVault(vaultId);
@@ -560,7 +691,8 @@ document.addEventListener("click", async (ev) => {
     return watchJob(r.job, "Sending the vault payment", "<p>Paid from the vault.</p>");
   }
   if (t.dataset.submitp) return runJob(`/api/vaults/${vaultId}/proposals/${t.dataset.submitp}/submit`, {}, "Sending the vault payment", "<p>Paid from the vault.</p>", "vault");
-  if (t.dataset.tab) { tab = t.dataset.tab; return render(); }
+  if (t.dataset.tab) { tab = t.dataset.tab; window.scrollTo(0, 0); return render(); }
+  if (t.dataset.share) { try { await navigator.share({ title: `${cap(S.name)}'s address`, text: t.dataset.share }); } catch { /* dismissed */ } return; }
   if (t.dataset.copy) {
     const prev = t.textContent;
     try { await navigator.clipboard.writeText(t.dataset.copy); t.textContent = "Copied"; } catch { t.textContent = t.dataset.copy; }
@@ -571,6 +703,8 @@ document.addEventListener("click", async (ev) => {
     try { const q = await api("/api/quote"); $("amt").value = eth(q.maxSendWei, 18).replace(/,/g, ""); } catch { /* ignore */ } return;
   }
   const act = t.dataset.do;
+  if (act === "retry") return refresh();
+  if (act === "unpair") { setPairCode(""); screen = "home"; return refresh(); }
   if (act === "create") return runJob("/api/create", {}, `Creating ${cap(S.name)}'s wallet`,
     `<p>Your wallet is ready.</p>`);
   if (act === "faucet") return runJob("/api/faucet", {}, "Adding test ETH", `<div class="amt">+1 ETH</div><p class="muted">Test ETH added.</p>`);
@@ -610,6 +744,11 @@ document.addEventListener("submit", async (ev) => {
           return openVault(vaultId, { text: "Proposed and approved by you. One more guardian must approve." }); }
     catch (e) { $("pamt-err").textContent = e.message; } return;
   }
+  if (ev.target.id === "pair-form") {
+    const c = $("pcode").value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (c.length < 12) { pairMsg = "Enter the 12-character code."; return render(); }
+    setPairCode(c); pairMsg = ""; return refresh();
+  }
   if (ev.target.id === "net-form") {
     try { await api("/api/network", { ethrex: $("rpc").value.trim(), sidecar: $("mp").value.trim() }); screen = "home"; await refresh(); }
     catch (e) { $("net-err").textContent = e.message; }
@@ -617,7 +756,9 @@ document.addEventListener("submit", async (ev) => {
 });
 
 refresh();
-setInterval(() => { if (!busy && (["home", "vault"].includes(screen) || !S || !S.network.connected)) refresh(); }, 4000);
+setInterval(() => { if (!busy && !document.hidden && !needPair && (["home", "vault"].includes(screen) || !S || !S.network.connected)) refresh(); }, 4000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !busy && !isTyping()) refresh(); });  // back from the background
+if ("serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").catch(() => { /* still works without */ });
 </script>
 </body>
 </html>
