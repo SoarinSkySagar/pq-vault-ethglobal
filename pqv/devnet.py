@@ -4,7 +4,12 @@
     python -m pqv.devnet <network> deploy-infra
     python -m pqv.devnet <network> new-guardians
     python -m pqv.devnet <network> deploy-vault [--fund ETH] [--stake ETH] [--vault label]
-    python -m pqv.devnet <network> transfer <to> <wei> [--guardians 0,1] [--stateless 1]
+    python -m pqv.devnet <network> transfer <to> <wei> [--guardians 0,1] [--stateless 1] [--rotate-at 8]
+    python -m pqv.devnet <network> rotate <g> [--guardians a,b] [--stateless a]
+
+Slot refresh: a compact slot has 2^h leaves (128). Before signing, a guardian whose slot is nearly used up (or
+revoked) is rotated to a fresh slot first, approved by the other two (`--rotate-at`, 0 = off); an approver whose
+slot is completely used up signs with its stateless SPX key instead, so neither transfers nor rotations get stuck.
 
 Every vault transaction has three frames (the ERC-8421 `[only_verify, pay]` prefix + one body frame):
     frame 0 VERIFY (scope EXECUTION) validate(): guardian A's approval (entry 0)
@@ -47,7 +52,10 @@ VERIFY_BASE_GAS = 30_000
 VERIFY_COMPACT_GAS = 70_000
 VERIFY_STATELESS_GAS = 300_000
 MAX_TX_COST_WEI = 5 * 10**16
-SLOT_H = 7
+SLOT_H = 7  # compact slot height: 2^7 = 128 leaves
+# Automatic slot refresh: before a guardian approves with its compact key, rotate it when this many leaves (or
+# fewer) are left, capped at a quarter of the slot so tiny test slots still get used. 0 disables it.
+ROTATE_AT = 8
 
 
 # ----------------------------------------------------------------------------- small utils
@@ -187,18 +195,21 @@ def deploy_infra(net: Net):
     print(f"  ledger: {dep['ledger']}")
 
 
-def new_guardians(net: Net):
-    if net.load("guardians.json"):
-        raise SystemExit("guardians.json exists; refusing to overwrite keys")
-    gs = [{"index": i, "master_sk": h(os.urandom(32)), "slots": [{"r": h(os.urandom(32)), "h": SLOT_H}]}
+def new_guardians(net: Net, slot_h: int = SLOT_H, file: str = "guardians.json"):
+    if net.load(file):
+        raise SystemExit(f"{file} exists; refusing to overwrite keys")
+    if not 2 <= slot_h <= 7:
+        raise SystemExit("slot height must be in [2, 7] (2^h leaves; the leaf index is one byte)")
+    gs = [{"index": i, "master_sk": h(os.urandom(32)), "slots": [{"r": h(os.urandom(32)), "h": slot_h}]}
           for i in range(3)]
-    net.save("guardians.json", gs)
-    print(f"created 3 guardians (secret keys in .devnet/{net.name}/guardians.json)")
+    net.save(file, gs)
+    print(f"created 3 guardians with {1 << slot_h}-leaf slots (secret keys in .devnet/{net.name}/{file})")
 
 
 class Guardian:
-    def __init__(self, net: Net, rec: dict, prefix: str = "guardian", anchored: bool = True):
-        self.net, self.rec, self.i = net, rec, rec["index"]
+    def __init__(self, net: Net, rec: dict, prefix: str = "guardian", anchored: bool = True,
+                 file: str = "guardians.json"):
+        self.net, self.rec, self.i, self.file, self.anchored = net, rec, rec["index"], file, anchored
         self.keys = GuardianKeys(self.i, unhex(rec["master_sk"]))
         self._spx = None
         self._slots = {}
@@ -218,6 +229,15 @@ class Guardian:
             self._slots[s["r"]] = CompactSlot(self.keys.master_sk, unhex(s["r"]), s["h"])
         return self._slots[s["r"]]
 
+    def remaining_leaves(self) -> int:
+        """Leaves this guardian can still sign with on its current slot: above both its local counter and the
+        on-chain LeafLedger mark. A revoked slot (mark = max) has 0."""
+        slot = self.slot()
+        nxt = self.leaves.peek(slot.slot_id)
+        if self.anchored:
+            nxt = max(nxt, self.net.ledger_hwm(slot.slot_id) + 1)
+        return max(0, slot.q_max - nxt + 1)
+
     def sign_compact(self, msg: bytes) -> bytes:
         slot = self.slot()
         q = self.leaves.reserve(slot.slot_id, slot.q_max)  # burned (fsync) before the signature exists
@@ -231,7 +251,23 @@ def guardians(net: Net, file: str = "guardians.json", prefix: str = "guardian", 
     gs = net.load(file)
     if not gs:
         raise SystemExit(f"run new-guardians first ({file})")
-    return [Guardian(net, g, prefix, anchored) for g in gs]
+    return [Guardian(net, g, prefix, anchored, file) for g in gs]
+
+
+def save_guardians(gs):
+    gs[0].net.save(gs[0].file, [g.rec for g in gs])
+
+
+def rotation_due(remaining: int, q_max: int, rotate_at: int = ROTATE_AT) -> bool:
+    """Rotate before signing when `remaining` <= min(rotate_at, q_max // 4) (at least 1). rotate_at <= 0: never."""
+    if rotate_at <= 0:
+        return False
+    return remaining <= min(rotate_at, max(1, q_max // 4))
+
+
+def effective_kinds(kinds, remaining):
+    """An approver asked to sign compact whose slot has no leaf left signs stateless (SPX) instead."""
+    return ["stateless" if k == "compact" and r <= 0 else k for k, r in zip(kinds, remaining)]
 
 
 def deploy_vault(net: Net, fund_eth: float, stake_eth: float, use_ledger: bool = True, label: str = "vault",
@@ -351,11 +387,27 @@ def approver_plan(gs, approvers, stateless=()):
     return [gs[i] for i in idx], ["stateless" if i in stateless else "compact" for i in idx], idx
 
 
-def vault_call(net: Net, calls, approvers=(0, 1), stateless=(), label="vault call", gs=None, vault_label="vault"):
-    """Build, 2-of-3 sign, simulate, submit and record one vault frame transaction."""
+def vault_call(net: Net, calls, approvers=(0, 1), stateless=(), label="vault call", gs=None, vault_label="vault",
+               rotate_at: int = ROTATE_AT):
+    """Build, 2-of-3 sign, simulate, submit and record one vault frame transaction.
+    Compact approvers whose slot is nearly used up are rotated first (`rotate_at`); approvers with no leaf left
+    sign stateless."""
     gs = gs or guardians(net)
     vault = net.deployment[vault_label]
+    for i in sorted(set(approvers)):
+        if i in stateless:
+            continue
+        g = gs[i]
+        rem, q_max = g.remaining_leaves(), g.slot().q_max
+        if rotation_due(rem, q_max, rotate_at):
+            print(f"slot refresh: guardian {i} has {rem}/{q_max} leaves left; rotating to a fresh slot first")
+            cmd_rotate(net, i, gs=gs, vault_label=vault_label)
     signers, kinds, idx = approver_plan(gs, approvers, stateless)
+    eff = effective_kinds(kinds, [g.remaining_leaves() for g in signers])
+    for i, k, e in zip(idx, kinds, eff):
+        if k != e:
+            print(f"stateless fallback: guardian {i} has no compact leaf left; it signs with its SPX key")
+    kinds = eff
     tx = build_vault_tx(net, vault, calls, kinds)
     sh = sign_vault_tx(tx, signers, kinds)
     sim = simulate(tx)
@@ -373,6 +425,7 @@ def vault_call(net: Net, calls, approvers=(0, 1), stateless=(), label="vault cal
           f"gasUsed {int(rc['gasUsed'], 16)}")
     record_receipt(net, label, out, {"sigHash": h(sh), "guardians": idx, "kinds": kinds,
                                      "simulation": brief, "vault": vault})
+    out["kinds"], out["guardians"] = kinds, idx
     return out
 
 
@@ -384,25 +437,28 @@ def _plus(idx, stateless):
     return "+".join(f"g{i}" + ("(spx)" if i in stateless else "") for i in sorted(idx))
 
 
-def cmd_transfer(net: Net, to: str, wei: int, approvers=(0, 1), stateless=(), label=None, vault_label="vault"):
+def cmd_transfer(net: Net, to: str, wei: int, approvers=(0, 1), stateless=(), label=None, vault_label="vault",
+                 rotate_at: int = ROTATE_AT, gs=None):
     return vault_call(net, [(to, wei, "0x")], approvers, stateless, label or f"transfer {_plus(approvers, stateless)}",
-                      vault_label=vault_label)
+                      gs=gs, vault_label=vault_label, rotate_at=rotate_at)
 
 
-def cmd_rotate(net: Net, g: int, pair=None):
-    """Key rotation: guardian g gets a fresh compact slot (new random r); the old slot is revoked."""
-    gs = guardians(net)
+def cmd_rotate(net: Net, g: int, pair=None, stateless=(), gs=None, vault_label="vault"):
+    """Slot refresh / key rotation: guardian g gets a fresh compact slot (new random r, same height); the old slot
+    is revoked in the same 2-of-3 transaction, approved by the other two guardians. An approver with no compact
+    leaf left signs stateless automatically. Rotations never trigger further rotations."""
+    gs = gs or guardians(net)
     pair = pair or _others(g)
     old = gs[g].slot()
-    rec = net.load("guardians.json")
     new_r = h(os.urandom(32))
-    new_slot = CompactSlot(gs[g].keys.master_sk, unhex(new_r), SLOT_H)
-    vault = net.deployment["vault"]
+    new_slot = CompactSlot(gs[g].keys.master_sk, unhex(new_r), old.h)
+    vault = net.deployment[vault_label]
     calls = [(vault, 0, cast("calldata", "registerSlot(uint8,bytes16,bytes16)", str(g), h(new_slot.seed16), h(new_slot.root16))),
              (vault, 0, cast("calldata", "revokeSlot(bytes32)", h(old.slot_id)))]
-    out = vault_call(net, calls, pair, label=f"rotate guardian {g} slot (approved by {_plus(pair, ())})", gs=gs)
-    rec[g]["slots"].append({"r": new_r, "h": SLOT_H})
-    net.save("guardians.json", rec)
+    out = vault_call(net, calls, pair, stateless, label=f"rotate guardian {g} slot (approved by {_plus(pair, stateless)})",
+                     gs=gs, vault_label=vault_label, rotate_at=0)
+    gs[g].rec["slots"].append({"r": new_r, "h": old.h})
+    save_guardians(gs)
     return out
 
 
@@ -522,6 +578,9 @@ def main(argv=None):
     ap.add_argument("--guardians", default="0,1", help="the two approving guardian indices")
     ap.add_argument("--stateless", default="", help="approvers that sign with their stateless SPX key")
     ap.add_argument("--vault", default="vault", help="deployment label of the vault to use / deploy")
+    ap.add_argument("--rotate-at", type=int, default=ROTATE_AT,
+                    help="rotate an approver's slot first when this many leaves (or fewer) are left; 0 = off")
+    ap.add_argument("--slot-h", type=int, default=SLOT_H, help="new-guardians: compact slot height (2^h leaves)")
     a = ap.parse_args(argv)
     net = Net(a.network)
     if a.cmd == "status":
@@ -529,14 +588,16 @@ def main(argv=None):
     elif a.cmd == "deploy-infra":
         deploy_infra(net)
     elif a.cmd == "new-guardians":
-        new_guardians(net)
+        new_guardians(net, a.slot_h)
     elif a.cmd == "deploy-vault":
         deploy_vault(net, a.fund, a.stake, label=a.vault)
     elif a.cmd == "transfer":
         cmd_transfer(net, a.args[0], int(a.args[1]), tuple(int(x) for x in a.guardians.split(",")),
-                     tuple(int(x) for x in a.stateless.split(",") if x), vault_label=a.vault)
+                     tuple(int(x) for x in a.stateless.split(",") if x), vault_label=a.vault, rotate_at=a.rotate_at)
     elif a.cmd == "rotate":
-        cmd_rotate(net, int(a.args[0]))
+        g = int(a.args[0])
+        pair = tuple(int(x) for x in a.guardians.split(",")) if g not in (0, 1) or a.guardians != "0,1" else None
+        cmd_rotate(net, g, pair, tuple(int(x) for x in a.stateless.split(",") if x), vault_label=a.vault)
     elif a.cmd == "recover":
         cmd_recover(net, int(a.args[0]))
     elif a.cmd == "attack-stale-restore":

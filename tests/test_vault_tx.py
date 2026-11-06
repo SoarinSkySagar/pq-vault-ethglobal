@@ -65,5 +65,45 @@ class VaultTx(unittest.TestCase):
                 dv.approver_plan(gs, bad)
 
 
+class SlotRefresh(unittest.TestCase):
+    def test_rotation_due_thresholds(self):
+        self.assertFalse(dv.rotation_due(9, 128))        # default: rotate at <= 8 left of 128
+        self.assertTrue(dv.rotation_due(8, 128))
+        self.assertTrue(dv.rotation_due(0, 128))
+        self.assertFalse(dv.rotation_due(2, 4))          # tiny slot: capped at q_max // 4 = 1
+        self.assertTrue(dv.rotation_due(1, 4))
+        self.assertFalse(dv.rotation_due(0, 128, rotate_at=0))  # disabled
+
+    def test_exhausted_compact_approver_falls_back_to_stateless(self):
+        self.assertEqual(dv.effective_kinds(["compact", "compact"], [0, 5]), ["stateless", "compact"])
+        self.assertEqual(dv.effective_kinds(["stateless", "compact"], [0, 0]), ["stateless", "stateless"])
+
+    def test_remaining_leaves_uses_local_counter_and_chain_mark(self):
+        import tempfile, os
+        from pqv.hashing import keccak256
+
+        class FakeNet:
+            def __init__(self, d):
+                self.d, self.mark = d, 0
+
+            def path(self, f):
+                return os.path.join(self.d, f)
+
+            def ledger_hwm(self, slot_id):
+                return self.mark
+
+        net = FakeNet(tempfile.mkdtemp())
+        rec = {"index": 0, "master_sk": "0x" + keccak256(b"m").hex(),
+               "slots": [{"r": "0x" + keccak256(b"r").hex(), "h": 2}]}
+        g = dv.Guardian(net, rec)
+        self.assertEqual(g.remaining_leaves(), 4)
+        g.sign_compact(keccak256(b"tx1"))
+        self.assertEqual(g.remaining_leaves(), 3)  # local burn-before-sign counter
+        net.mark = 3
+        self.assertEqual(g.remaining_leaves(), 1)  # leaves 1..3 already on chain (e.g. another device)
+        net.mark = 2**256 - 1
+        self.assertEqual(g.remaining_leaves(), 0)  # revoked slot (equivocation report)
+
+
 if __name__ == "__main__":
     unittest.main()
