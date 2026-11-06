@@ -6,12 +6,17 @@
     python -m pqv.devnet <network> deploy-vault [--threshold 2] [--fund ETH] [--stake ETH]
     python -m pqv.devnet <network> transfer <to> <wei> [--guardians 0,1] [--stateless 1]
 
-Transactions have three frames (the ERC-8421 `[only_verify, pay]` prefix + one body frame):
+Two transaction shapes (--frames; default 2 on `public`, 3 elsewhere, or "frames" in network.json):
+  3 frames (ERC-8421 `[only_verify, pay]` prefix + body) — every approval verified before payment:
     frame 0 VERIFY (scope EXECUTION) validate() over approvals [0, k)
     frame 1 VERIFY (scope PAYMENT)   validate() over approvals [k, t)
     frame 2 SENDER execute(calls): consume every approval's leaf, run the batch
-Two or more PQ approvals need more than EIP-8141's 100k MAX_VERIFY_GAS; an ERC-8421 mempool that
-implements [BUDGET-010] (per-entity budgets, 1M for a staked entity) admits them.
+    Needs an ERC-8421 mempool with [BUDGET-010] (per-entity budgets, 1M for a staked entity): two or more
+    PQ approvals exceed EIP-8141's combined 100k MAX_VERIFY_GAS.
+  2 frames (`[self_verify]` prefix + body) — fallback for mempools with the combined 100k cap (public gateway):
+    frame 0 VERIFY (scope EXECUTION+PAYMENT) validateAndCommit(): the committer's compact approval, signed
+                   last over first_message(sigHash, other entries)
+    frame 1 SENDER execute(calls): verify the other t-1 approvals, consume leaves, run the batch
 
 <network> is `public` (chain-1337 alt-mempool devnet) or `local` (infra/local-devnet.sh, Kurtosis).
 ECDSA appears in exactly one place: the throwaway deployer EOA (.devnet/deployer.json) that publishes
@@ -29,7 +34,7 @@ import time
 from . import frametx as ft
 from . import rpc
 from .hashing import ROOT, keccak256
-from .jardin import CompactSlot, GuardianKeys, compact_entry, stateless_entry, vault_message
+from .jardin import CompactSlot, GuardianKeys, compact_entry, first_message, stateless_entry, vault_message
 from .state import AnchoredLeafStore, DurableLeafStore
 
 DEVNET_DIR = os.path.join(ROOT, ".devnet")
@@ -41,12 +46,14 @@ PUBLIC = {"ethrex": "https://altmempool.forshtat.com", "sidecar": "https://altme
           "staking": "0xd51c04d7a0b01124e84de152f4e56d9eecb22d2f", "explorer": "https://explorer.altmempool.wtf"}
 # Declared VERIFY-frame execution limits. The sum over both frames + 100 per ARBITRARY entry is what an
 # ERC-8421 node counts against the vault's validation budget ([BUDGET-010]). Measured (Foundry, gas-faithful
-# FrameOps stand-in): 86k for a frame with one compact approval, +68k per further compact approval,
-# 295k for a frame with one stateless (SPX) approval. Limits below carry ~10-15% headroom.
+# FrameOps stand-in): 86,135 for a frame with one compact approval, +~68.5k per further compact approval,
+# 295,410 for a frame with one stateless (SPX) approval. Limits below carry ~10-15% headroom.
+# Two-frame shape: one compact approval + restHash, 89,647 (t=2) / 89,996 (t=3); limit 100,000 - 100 t.
 VERIFY_BASE_GAS = 30_000
 VERIFY_COMPACT_GAS = 70_000
 VERIFY_STATELESS_GAS = 300_000
 MAX_VERIFY_GAS_STAKED_ENTITY = 1_000_000  # ERC-8421
+MAX_VERIFY_GAS = 100_000  # EIP-8141, combined over the prefix (+100 per ARBITRARY signature)
 MAX_TX_COST_WEI = 5 * 10**16
 SLOT_H = 7
 
@@ -287,39 +294,63 @@ def split_point(kinds) -> int:
     return min(range(1, t), key=lambda k: max(approval_gas(kinds[:k]), approval_gas(kinds[k:])))
 
 
-def build_vault_tx(net: Net, vault: str, calls, kinds, exec_gas=900_000, state_gas=400_000) -> ft.FrameTx:
-    """Unsigned three-frame vault transaction for approvals of the given kinds ("compact"/"stateless"),
-    listed in increasing guardian order."""
+def build_vault_tx(net: Net, vault: str, calls, kinds, exec_gas=900_000, state_gas=400_000, frames=3) -> ft.FrameTx:
+    """Unsigned vault transaction for approvals of the given kinds ("compact"/"stateless"), in entry order
+    (three frames: increasing guardian order; two frames: committer first, then increasing guardian order)."""
     t = len(kinds)
     if t < 2:
         raise ValueError("a vault transaction needs at least 2 approvals")
-    k = split_point(kinds)
-    g0, g1 = approval_gas(kinds[:k]), approval_gas(kinds[k:])
-    if g0 + g1 + 100 * t > MAX_VERIFY_GAS_STAKED_ENTITY:
-        raise ValueError(f"validation prefix {g0 + g1 + 100 * t} gas exceeds ERC-8421 MAX_VERIFY_GAS_STAKED_ENTITY")
     nonce = int(rpc.eth("eth_getTransactionCount", [vault, "latest"]), 16)
     chain_id = int(rpc.eth("eth_chainId"), 16)
     base = int(rpc.eth("eth_getBlockByNumber", ["latest", False])["baseFeePerGas"], 16)
     max_fee = max(4 * base, 2 * 10**9)
     v = unhex(vault)
-    return ft.FrameTx(
-        sender=v, nonce_seq=nonce,
+    if frames == 2:
+        if kinds[0] != "compact":
+            raise ValueError("two-frame shape: the committer (entry 0) must sign compact (SPX does not fit 100k)")
+        fs = [ft.Frame(ft.MODE_VERIFY, ft.SCOPE_EXECUTION_AND_PAYMENT, None, MAX_VERIFY_GAS - 100 * t, 0, 0,
+                       sel("validateAndCommit()")),
+              ft.Frame(ft.MODE_SENDER, 0, v, exec_gas, state_gas, 0, execute_calldata(calls))]
+    elif frames == 3:
+        k = split_point(kinds)
+        g0, g1 = approval_gas(kinds[:k]), approval_gas(kinds[k:])
+        if g0 + g1 + 100 * t > MAX_VERIFY_GAS_STAKED_ENTITY:
+            raise ValueError(f"validation prefix {g0 + g1 + 100 * t} gas exceeds ERC-8421 MAX_VERIFY_GAS_STAKED_ENTITY")
         # frame 0 target None = tx.sender (only_verify must target the sender); frame 1 names the payer (the vault)
-        frames=[ft.Frame(ft.MODE_VERIFY, ft.SCOPE_EXECUTION, None, g0, 0, 0, validate_data(0, k)),
-                ft.Frame(ft.MODE_VERIFY, ft.SCOPE_PAYMENT, v, g1, 0, 0, validate_data(k, t)),
-                ft.Frame(ft.MODE_SENDER, 0, v, exec_gas, state_gas, 0, execute_calldata(calls))],
-        signatures=[ft.Signature(ft.SCHEME_ARBITRARY) for _ in range(t)],
-        max_priority_fee=10**9, max_fee=max_fee, chain_id=chain_id)
+        fs = [ft.Frame(ft.MODE_VERIFY, ft.SCOPE_EXECUTION, None, g0, 0, 0, validate_data(0, k)),
+              ft.Frame(ft.MODE_VERIFY, ft.SCOPE_PAYMENT, v, g1, 0, 0, validate_data(k, t)),
+              ft.Frame(ft.MODE_SENDER, 0, v, exec_gas, state_gas, 0, execute_calldata(calls))]
+    else:
+        raise ValueError("frames must be 2 or 3")
+    return ft.FrameTx(sender=v, nonce_seq=nonce, frames=fs,
+                      signatures=[ft.Signature(ft.SCHEME_ARBITRARY) for _ in range(t)],
+                      max_priority_fee=10**9, max_fee=max_fee, chain_id=chain_id)
+
+
+def entry_signer(g, kind):
+    return (lambda m: g.sign_stateless(m)) if kind == "stateless" else (lambda m: g.sign_compact(m))
+
+
+def sign_entries(tx: ft.FrameTx, entry_fns):
+    """Fill the signature entries. entry_fns[i](message) -> entry bytes, in entry order.
+    Three frames: every entry signs vault_message(sigHash), independently.
+    Two frames: entries 1..t-1 sign vault_message(sigHash) first; entry 0 signs last, over
+    first_message(sigHash, entries 1..t-1), so it commits to their exact bytes."""
+    sh = tx.sig_hash()  # empty-msg ARBITRARY bytes are elided, so adding them does not change the hash
+    m = vault_message(sh)
+    if len(tx.frames) == 2:
+        for i in range(1, len(entry_fns)):
+            tx.signatures[i].signature = entry_fns[i](m)
+        tx.signatures[0].signature = entry_fns[0](first_message(sh, [s.signature for s in tx.signatures[1:]]))
+    else:
+        for i, fn in enumerate(entry_fns):
+            tx.signatures[i].signature = fn(m)
+    assert tx.sig_hash() == sh
+    return sh
 
 
 def sign_vault_tx(tx: ft.FrameTx, approvers, kinds):
-    """Every approver signs the same message, independently (no ordering between guardians)."""
-    sh = tx.sig_hash()  # empty-msg ARBITRARY bytes are elided, so adding them does not change the hash
-    m = vault_message(sh)
-    for i, (g, kind) in enumerate(zip(approvers, kinds)):
-        tx.signatures[i].signature = g.sign_stateless(m) if kind == "stateless" else g.sign_compact(m)
-    assert tx.sig_hash() == sh
-    return sh
+    return sign_entries(tx, [entry_signer(g, k) for g, k in zip(approvers, kinds)])
 
 
 def simulate(tx: ft.FrameTx, trace=False) -> dict:
@@ -357,23 +388,39 @@ def record_receipt(net: Net, label: str, out: dict, extra=None):
     net.save("receipts.json", recs)
 
 
-def approver_plan(gs, approvers, stateless=()):
-    """Sorted approver guardians and their signature kinds."""
+def approver_plan(gs, approvers, stateless=(), frames=3, committer=None):
+    """Approver guardians in entry order and their signature kinds.
+    Three frames: increasing guardian order. Two frames: the committer (default: the lowest-index compact
+    approver) first, then the others in increasing order."""
     idx = sorted(set(approvers))
     if len(idx) != len(approvers):
         raise ValueError("an approver may appear only once")
+    if frames == 2:
+        if committer is None:
+            committer = next((i for i in idx if i not in stateless), None)
+        if committer is None or committer not in idx or committer in stateless:
+            raise ValueError("two-frame shape needs a compact committer among the approvers")
+        idx = [committer] + [i for i in idx if i != committer]
     return [gs[i] for i in idx], ["stateless" if i in stateless else "compact" for i in idx], idx
 
 
-def vault_call(net: Net, calls, approvers=(0, 1), stateless=(), label="vault call", gs=None, vault_label="vault"):
+def net_frames(net) -> int:
+    """Transaction shape for this network: "frames" in network.json, else 2 on the public gateway
+    (combined 100k cap), else 3."""
+    return int(net.cfg.get("frames", 2 if net.name == "public" else 3))
+
+
+def vault_call(net: Net, calls, approvers=(0, 1), stateless=(), label="vault call", gs=None, vault_label="vault",
+               frames=None, committer=None):
     """Build, t-of-n sign, simulate, submit and record one vault frame transaction."""
     gs = gs or guardians(net)
     vault = net.deployment[vault_label]
     t = net.deployment.get("thresholds", {}).get(vault_label, 2)
     if len(approvers) != t:
         raise SystemExit(f"{vault_label} is {t}-of-{len(gs)}: give exactly {t} approvers")
-    signers, kinds, idx = approver_plan(gs, approvers, stateless)
-    tx = build_vault_tx(net, vault, calls, kinds)
+    frames = frames or net_frames(net)
+    signers, kinds, idx = approver_plan(gs, approvers, stateless, frames, committer)
+    tx = build_vault_tx(net, vault, calls, kinds, frames=frames)
     sh = sign_vault_tx(tx, signers, kinds)
     sim = simulate(tx)
     # `valid`/`violation` are ethrex's *canonical* (EIP-8141 public mempool) verdict. PQ-Vault's VERIFY frame
@@ -388,7 +435,7 @@ def vault_call(net: Net, calls, approvers=(0, 1), stateless=(), label="vault cal
     rc = out["receipt"]
     print(f"{label}: tx {out['txHash']} status {rc['status']} block {int(rc['blockNumber'], 16)} "
           f"gasUsed {int(rc['gasUsed'], 16)}")
-    record_receipt(net, label, out, {"sigHash": h(sh), "guardians": idx, "kinds": kinds,
+    record_receipt(net, label, out, {"sigHash": h(sh), "guardians": idx, "kinds": kinds, "frames": frames,
                                      "simulation": brief, "vault": vault})
     return out
 
@@ -405,11 +452,14 @@ def _plus(idx, stateless):
     return "+".join(f"g{i}" + ("(spx)" if i in stateless else "") for i in sorted(idx))
 
 
-def cmd_transfer(net: Net, to: str, wei: int, approvers=(0, 1), stateless=(), label=None, vault_label="vault"):
+def cmd_transfer(net: Net, to: str, wei: int, approvers=(0, 1), stateless=(), label=None, vault_label="vault",
+                 frames=None, committer=None):
     t = net.deployment.get("thresholds", {}).get(vault_label, 2)
     n = len(net.load("guardians.json", []))
+    frames = frames or net_frames(net)
     return vault_call(net, [(to, wei, "0x")], approvers, stateless,
-                      label or f"transfer {t}-of-{n} {_plus(approvers, stateless)}", vault_label=vault_label)
+                      label or f"transfer {t}-of-{n} {_plus(approvers, stateless)} ({frames} frames)",
+                      vault_label=vault_label, frames=frames, committer=committer)
 
 
 def cmd_rotate(net: Net, g: int, pair=None):
@@ -504,12 +554,10 @@ def cmd_attack_stale_restore(net: Net):
     hwm = net.ledger_hwm(pslot.slot_id)
     if hwm >= 1:
         t = net.deployment.get("thresholds", {}).get("vault", 2)
-        tx = build_vault_tx(net, net.deployment["vault"], [(to, 3, "0x")], ["compact"] * t)
-        sh = tx.sig_hash()
-        m = vault_message(sh)
-        tx.signatures[0].signature = compact_entry(0, pslot, pslot.sign(m, hwm))  # reused leaf
-        for i in range(1, t):
-            tx.signatures[i].signature = gs[i].sign_compact(m)
+        tx = build_vault_tx(net, net.deployment["vault"], [(to, 3, "0x")], ["compact"] * t, frames=net_frames(net))
+        # guardian 0 (restored signer, reused leaf) is entry 0 in both shapes: lowest index / the committer
+        sign_entries(tx, [lambda m: compact_entry(0, pslot, pslot.sign(m, hwm))]
+                     + [entry_signer(gs[i], "compact") for i in range(1, t)])
         sim = simulate(tx)
         try:
             rpc.sidecar("eth_sendFrameTransaction", [tx.to_wire()])
@@ -531,7 +579,10 @@ def raw_tx(net: Net, tx_hash: str) -> ft.FrameTx:
 def entry0_and_message(net: Net, tx_hash: str):
     """From an included vault transaction (public data): the first approval's entry and the message it signed."""
     tx = raw_tx(net, tx_hash)
-    return tx.signatures[0].signature, vault_message(tx.sig_hash())
+    sh = tx.sig_hash()
+    if len(tx.frames) == 2:
+        return tx.signatures[0].signature, first_message(sh, [s.signature for s in tx.signatures[1:]])
+    return tx.signatures[0].signature, vault_message(sh)
 
 
 def parse_q(net: Net, tx_hash: str) -> int:
@@ -551,6 +602,9 @@ def main(argv=None):
     ap.add_argument("--n", type=int, default=3, help="new-guardians: number of guardians")
     ap.add_argument("--threshold", type=int, default=2, help="deploy-vault: approvals required (t)")
     ap.add_argument("--vault", default="vault", help="deployment label of the vault to use / deploy")
+    ap.add_argument("--frames", type=int, choices=[2, 3], default=None,
+                    help="transaction shape (default: 2 on public, 3 elsewhere, or network.json 'frames')")
+    ap.add_argument("--committer", type=int, default=None, help="two-frame shape: guardian whose approval is in VERIFY")
     a = ap.parse_args(argv)
     net = Net(a.network)
     if a.cmd == "status":
@@ -563,7 +617,8 @@ def main(argv=None):
         deploy_vault(net, a.fund, a.stake, label=a.vault, threshold=a.threshold)
     elif a.cmd == "transfer":
         cmd_transfer(net, a.args[0], int(a.args[1]), tuple(int(x) for x in a.guardians.split(",")),
-                     tuple(int(x) for x in a.stateless.split(",") if x), vault_label=a.vault)
+                     tuple(int(x) for x in a.stateless.split(",") if x), vault_label=a.vault,
+                     frames=a.frames, committer=a.committer)
     elif a.cmd == "rotate":
         cmd_rotate(net, int(a.args[0]))
     elif a.cmd == "recover":

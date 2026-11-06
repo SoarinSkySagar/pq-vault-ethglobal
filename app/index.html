@@ -61,7 +61,7 @@
       <div style="flex:1"><label>Of those, sign stateless (JARDIN SPX, 6.5 KB; others compact FORS, 2.7 KB)</label>
         <input id="stateless" value="" placeholder="e.g. 1"></div>
     </div>
-    <div class="muted">Frames: VERIFY (execution) + VERIFY (payment) check every approval, then one SENDER frame consumes all leaves and executes.</div>
+    <div class="muted" id="shapeNote">Frames: VERIFY (execution) + VERIFY (payment) check every approval, then one SENDER frame consumes all leaves and executes.</div>
     <button class="primary" id="send">Sign with t guardians &amp; send via alt mempool</button>
     <div id="sendOut" class="muted" style="margin-top:8px"></div>
   </section>
@@ -109,12 +109,15 @@ async function refresh() {
     <div>address</div><div class="mono">${v.address || "not deployed"}</div>
     <div>balance</div><div>${v.balanceWei ? (Number(v.balanceWei) / 1e18).toFixed(6) + " ETH" : "-"}</div>
     <div>nonce</div><div>${v.nonce ?? "-"}</div>
-    <div>policy</div><div>${v.threshold ? `${v.threshold}-of-${v.guardians}` : "-"}</div>
+    <div>policy</div><div>${v.threshold ? `${v.threshold}-of-${v.guardians}, ${v.frames}-frame transactions` : "-"}</div>
     <div>LeafLedger</div><div class="mono">${d.ledger || "-"}</div>
     <div>JARDIN FORS / SPX</div><div class="mono">${short(d.forsVerifier)} / ${short(d.spxVerifier)}</div>
     <div>staking registry</div><div class="mono">${d.staking || "-"}</div>
     <div>tx submitted to</div><div class="mono">${S.mempool}</div>`;
   $("tNeeded").textContent = v.threshold || "t";
+  $("shapeNote").textContent = v.frames === 2
+    ? "Frames (fallback for mempools with the combined 100k cap): VERIFY checks the first compact approval, which commits to the others; SENDER checks the rest, consumes leaves and executes."
+    : "Frames: VERIFY (execution) + VERIFY (payment) check every approval, then one SENDER frame consumes all leaves and executes.";
   $("guardians").innerHTML = S.guardians.map(g => {
     const used = g.ledgerHighWaterMark === "revoked" ? g.qMax : g.ledgerHighWaterMark;
     return `<div class="g">

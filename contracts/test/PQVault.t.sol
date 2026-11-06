@@ -528,6 +528,146 @@ contract PQVaultTest is TestBase {
         assertTrue(!ledger.isRevoked(_j32("g0_slotId")), "honest slot not revoked");
     }
 
+    // ------------------------------------------------------------------ two-frame fallback (combined 100k mempools)
+    bytes32 constant TF_WORD = bytes32(PQVault.validateAndCommit.selector);
+
+    function _load2(PQVault v, string memory s, PQVault.Call[] memory calls) internal {
+        uint256 n = _jn(string.concat(s, "_n"));
+        ops.reset(_j32(string.concat(s, "_sigHash")), MAX_COST, 0);
+        ops.addFrame(1, address(v), TF_WORD, 3); // VERIFY, scope EXECUTION_AND_PAYMENT (self_verify)
+        ops.addFrame(2, address(v), bytes32(abi.encodeCall(PQVault.execute, (calls))), 0); // SENDER
+        for (uint256 i = 0; i < n; i++) {
+            ops.addSig(_e(s, i));
+        }
+    }
+
+    function _verify2(PQVault v) internal returns (bool ok, bytes memory ret) {
+        ops.setCurFrame(0);
+        vm.store(address(v), ops.APPROVED_SLOT(), 0);
+        bytes memory data = abi.encodeCall(PQVault.validateAndCommit, ());
+        vm.prank(ENTRY_POINT);
+        (ok, ret) = address(v).call(data);
+    }
+
+    function _verify2Ok(PQVault v) internal {
+        (bool ok, bytes memory ret) = _verify2(v);
+        if (!ok) {
+            assembly {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
+        assertEq(_approvedScope(v), 3, "VERIFY must APPROVE execution+payment");
+    }
+
+    function _expectVerify2Revert(PQVault v, bytes memory err) internal {
+        (bool ok, bytes memory ret) = _verify2(v);
+        assertTrue(!ok, "VERIFY frame must revert");
+        assertEq(keccak256(ret), keccak256(err), "revert reason");
+    }
+
+    function _execute2(PQVault v, PQVault.Call[] memory calls) internal {
+        ops.setCurFrame(1);
+        vm.prank(address(v));
+        v.execute(calls);
+    }
+
+    function _run2(PQVault v, string memory s, PQVault.Call[] memory calls) internal {
+        _load2(v, s, calls);
+        _verify2Ok(v);
+        _execute2(v, calls);
+    }
+
+    function _rejected() internal returns (bool found, uint256 index, uint256 reason) {
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == PQVault.ApprovalRejected.selector) {
+                (index, reason) = abi.decode(logs[i].data, (uint256, uint8));
+                found = true;
+            }
+        }
+    }
+
+    function test_twoFrame_executes() public {
+        _run2(vault, "tfHappy", _transfer(1 ether));
+        assertEq(address(sink).balance, 1 ether, "transfer executed");
+        assertEq(ledger.hwm(_j32("g0_slotId")), 1, "entry 0 leaf consumed");
+        assertEq(ledger.hwm(_j32("g1_slotId")), 1, "entry 1 leaf consumed");
+    }
+
+    function test_twoFrame_anyGuardianCommits_statelessSecond() public {
+        _run2(vault, "tfStateless", _transfer(2 ether)); // entry 0 = guardian 1, entry 1 = guardian 2 (SPX)
+        assertEq(address(sink).balance, 2 ether, "transfer executed");
+        assertEq(ledger.hwm(_j32("g1_slotId")), 2, "committer's leaf consumed");
+    }
+
+    function test_twoFrame_threeOfFour_executes() public {
+        _run2(vault34, "tfThreeOfFour", _transfer(1 ether)); // g3 commits, g0 and g2 follow
+        assertEq(address(sink).balance, 1 ether, "3-of-4 transfer executed");
+        assertEq(ledger.hwm(_j32("g3_slotId")), 1, "g3 leaf consumed");
+        assertEq(ledger.hwm(_j32("g0_slotId")), 1, "g0 leaf consumed");
+        assertEq(ledger.hwm(_j32("g2_slotId")), 1, "g2 leaf consumed");
+    }
+
+    /// Entry 1 is only verified after payment, but entry 0 commits to its exact bytes, so a relayer's
+    /// altered copy fails in the VERIFY frame (no fee).
+    function test_twoFrame_relayerMutatedLaterEntry_invalid() public {
+        _load2(vault, "tfHappy", _transfer(1 ether));
+        bytes memory e1 = _e("tfHappy", 1);
+        e1[50] = bytes1(uint8(e1[50]) ^ 1);
+        ops.setSig(1, e1);
+        _expectVerify2Revert(vault, _badEntry(0, R_SIG));
+    }
+
+    function test_twoFrame_laterApprovalOverOtherTx_executesNothing() public {
+        _load2(vault, "tfBadSecond", _transfer(1 ether));
+        _verify2Ok(vault); // entry 0 is valid and commits to the (bad) entry 1 bytes
+        vm.recordLogs();
+        _execute2(vault, _transfer(1 ether));
+        (bool found, uint256 index, uint256 reason) = _rejected();
+        assertTrue(found && index == 1 && reason == R_SIG, "ApprovalRejected(1, R_SIG)");
+        assertEq(address(sink).balance, 0, "nothing executed");
+        assertEq(ledger.hwm(_j32("g0_slotId")), 3, "committer's leaf consumed (its signature is public)");
+    }
+
+    function test_twoFrame_sameGuardianTwice_executesNothing() public {
+        _load2(vault, "tfSameGuardian", _transfer(1 ether));
+        _verify2Ok(vault);
+        vm.recordLogs();
+        _execute2(vault, _transfer(1 ether));
+        (bool found, uint256 index, uint256 reason) = _rejected();
+        assertTrue(found && index == 1 && reason == R_GUARDIAN, "ApprovalRejected(1, R_GUARDIAN)");
+        assertEq(address(sink).balance, 0, "nothing executed");
+    }
+
+    function test_twoFrame_statelessCommitter_refused() public {
+        _load2(vault, "tfStatelessFirst", _transfer(1 ether));
+        _expectVerify2Revert(vault, _badEntry(0, 4)); // R_KIND: SPX does not fit the 100k budget
+    }
+
+    function test_twoFrame_staleCommitterLeaf_rejected() public {
+        _run2(vault, "tfHappy", _transfer(1 ether));
+        _load2(vault, "tfHappy", _transfer(1 ether)); // same signatures again (replayed / rolled-back signer)
+        _expectVerify2Revert(
+            vault, abi.encodeWithSelector(PQVault.StaleLeaf.selector, _j32("g0_slotId"), uint256(1))
+        );
+    }
+
+    function test_shapes_cannotBeMixed() public {
+        // three-frame validate() inside a two-frame transaction
+        _load2(vault, "tfHappy", _transfer(1 ether));
+        _expectVerifyRevert(vault, 0, 0, 1, _badShape());
+        // two-frame validateAndCommit() inside a three-frame transaction
+        _load(vault, "happy", 1, _transfer(1 ether));
+        _expectVerify2Revert(vault, _badShape());
+        // two frames whose body frame is not this vault's execute()
+        ops.reset(_j32("tfHappy_sigHash"), MAX_COST, 0);
+        ops.addFrame(1, address(vault), TF_WORD, 3);
+        ops.addFrame(2, address(sink), bytes32(abi.encodeCall(Sink.ping, ())), 0);
+        ops.addSig(_e("tfHappy", 0));
+        ops.addSig(_e("tfHappy", 1));
+        _expectVerify2Revert(vault, _badShape());
+    }
+
     // ------------------------------------------------------------------ gas (mocked opcodes)
     /// Gas of one VERIFY frame, with a stand-in FrameOps whose cost profile matches the real Yul helper.
     function _gasVerify(PQVault v, uint256 f, uint256 from, uint256 to) internal returns (uint256 g) {
@@ -573,6 +713,44 @@ contract PQVaultTest is TestBase {
         emit log_named_uint("2-of-3 validation prefix gas (both frames)", g0 + g1);
         assertTrue(g0 < 100_000 && g1 < 100_000, "each VERIFY frame fits a 100k frame limit");
         assertTrue(g0 + g1 + 200 < 1_000_000, "prefix fits ERC-8421 MAX_VERIFY_GAS_STAKED_ENTITY");
+    }
+
+    /// Gas of the two-frame VERIFY frame (validateAndCommit) with the gas-faithful FrameOps stand-in.
+    function _gasVerify2(PQVault v, uint256 t) internal returns (uint256 g) {
+        ops.setCurFrame(0);
+        bytes[] memory reqs = new bytes[](t + 1);
+        reqs[0] = abi.encode(uint256(0), NONE, uint256(1), uint256(0)); // body frame + tx context
+        for (uint256 i = 1; i < t; i++) {
+            reqs[i] = abi.encode(uint256(0), i, NONE, NONE); // entries hashed into restHash
+        }
+        reqs[t] = abi.encode(uint256(0), uint256(0), NONE, NONE); // entry 0, verified
+        bytes[] memory resp = new bytes[](t + 1);
+        for (uint256 i = 0; i <= t; i++) {
+            (bool ok, bytes memory out) = address(ops).staticcall(reqs[i]);
+            require(ok, "mock");
+            resp[i] = out;
+        }
+        bytes memory mockCode = address(ops).code;
+        vm.etch(address(ops), address(new CodeBlobFrameOps(reqs, resp)).code);
+        bytes memory data = abi.encodeCall(PQVault.validateAndCommit, ());
+        vm.recordLogs();
+        vm.prank(ENTRY_POINT);
+        g = gasleft();
+        (bool okv,) = address(v).call(data);
+        g -= gasleft();
+        assertTrue(okv, "validateAndCommit");
+        assertTrue(vm.getRecordedLogs().length == 1, "APPROVE ran");
+        vm.etch(address(ops), mockCode);
+    }
+
+    function test_gas_validateAndCommit_fitsCombinedBudget() public {
+        _load2(vault, "tfHappy", _transfer(1 ether));
+        uint256 g2 = _gasVerify2(vault, 2);
+        _load2(vault34, "tfThreeOfFour", _transfer(1 ether));
+        uint256 g3 = _gasVerify2(vault34, 3);
+        emit log_named_uint("two-frame VERIFY gas, 2-of-n (limit 100,000 - 2 x 100)", g2);
+        emit log_named_uint("two-frame VERIFY gas, 3-of-n (limit 100,000 - 3 x 100)", g3);
+        assertTrue(g2 <= 99_800 && g3 <= 99_700, "fits EIP-8141 MAX_VERIFY_GAS with the signature cost");
     }
 
     function test_gas_validate_statelessApproval() public {

@@ -49,12 +49,12 @@ def section(name: str) -> str:
                   "| staked PQ-Vault → ERC-8421 alt mempool | True | transactions 1-5 above |"]
     adm = net.load("mempool-admission.json")
     if adm:
-        lines += ["", "### Mempool admission of three-frame t-of-n transactions (`research/mempool_admission.py`)", "",
+        lines += ["", "### Mempool admission of vault transactions (`research/mempool_admission.py`)", "",
                   "Each row is one signed transaction submitted to ethrex's canonical EIP-8141 mempool and to the ERC-8421 "
                   "sidecar configured at that time (stock image = combined 100k MAX_VERIFY_GAS; `budget-010` image = "
                   "per-entity [BUDGET-010]). Frame gas is from `ethrex_simulateFrameTransaction`.", "",
-                  "| tag | vault | approvals | declared VERIFY limits | simulated frame gas (V0, V1, SENDER) | canonical mempool | alt mempool | included |",
-                  "|---|---|---|---|---|---|---|---|"]
+                  "| tag | vault | frames | approvals (entry order) | declared VERIFY limits | simulated frame gas (in order) | canonical mempool | alt mempool | included |",
+                  "|---|---|---|---|---|---|---|---|---|"]
         for a in adm:
             fr = [int(f["gasUsed"], 16) for f in (a["simulation"].get("frames") or [])]
             alt = a["altMempool"]
@@ -65,7 +65,7 @@ def section(name: str) -> str:
             inc = f"block {rc['block']}, {rc['status']}, gas {rc['gasUsed']}" if rc else "-"
             appr = ", ".join(f"g{g}:{k}" for g, k in zip(a["guardians"], a["kinds"]))
             note = f" ({a['note']})" if a.get("note") else ""
-            lines.append(f"| {a['tag']}{note} | {a['vaultLabel']} ({a['threshold']}-of-n) | {appr} | {a['declaredVerifyLimits']} "
+            lines.append(f"| {a['tag']}{note} | {a['vaultLabel']} ({a['threshold']}-of-n) | {a.get('frames', 3)} | {appr} | {a['declaredVerifyLimits']} "
                          f"| {fr} | {can_s} | {alt_s} | {inc} |")
     att = net.load("attack-stale-restore.json")
     if att:

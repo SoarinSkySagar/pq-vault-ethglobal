@@ -31,7 +31,9 @@ interface IStakingRegistry {
 ///
 ///         The number of guardians n and the threshold t (2 <= t <= n <= 16) are fixed at creation.
 ///
-///         Transaction shape (exactly), the ERC-8421 `[only_verify, pay]` validation prefix + one body frame:
+///         Two transaction shapes are accepted.
+///
+///         (A) Three frames, the ERC-8421 `[only_verify, pay]` validation prefix + one body frame:
 ///           signatures: t ARBITRARY entries, msg empty, guardian indices strictly increasing
 ///           frame 0 VERIFY  scope EXECUTION -> validate() data = selector ‖ 0 ‖ k   checks entries [0, k)
 ///           frame 1 VERIFY  scope PAYMENT   -> validate() data = selector ‖ k ‖ t   checks entries [k, t)
@@ -49,6 +51,18 @@ interface IStakingRegistry {
 ///         (LeafLedger.consume is an atomic check-and-update, so a leaf raced by another transaction
 ///         after validation is caught there) and then runs the batch atomically.
 ///
+///         (B) Two frames, the fallback for mempools that cap the whole validation prefix at EIP-8141's
+///             combined MAX_VERIFY_GAS (100k), such as the deployed workshop gateway (`[self_verify]` prefix):
+///           signatures: t ARBITRARY entries, msg empty
+///           frame 0 VERIFY  scope EXECUTION+PAYMENT -> validateAndCommit()  checks entry 0 only (compact)
+///           frame 1 SENDER                          -> execute(calls)       checks entries [1, t), consumes, runs
+///         Only one JARDIN verification fits 100k, so entries 1..t-1 are verified after payment is
+///         approved. To stop a relayer from corrupting them (their bytes are elided from the sig hash),
+///         entry 0's signer signs *last*, over firstMessageFor(sigHash, restHash) where restHash commits to
+///         the exact bytes of every other entry; entries 1..t-1 sign messageFor(sigHash), in guardian order.
+///         Residual cost of this shape: if an approval in [1, t) is invalid, nothing executes but the fee
+///         (<= MAX_TX_COST) is paid and entry 0's leaf is consumed (ApprovalRejected). Shape (A) has no such cost.
+///
 ///         Entry layout (ARBITRARY signature bytes):
 ///           compact   (0x02): guardian u8 ‖ 0x02 ‖ slotSeed 16 ‖ slotRoot 16 ‖ plain-FORS sig (2593+16h)
 ///           stateless (0x01): guardian u8 ‖ 0x01 ‖ SPX sig 6512   (against the guardian's master key)
@@ -63,6 +77,7 @@ contract PQVault {
     uint256 private constant MODE_SENDER = 2;
     uint256 private constant SCOPE_PAYMENT = 1;
     uint256 private constant SCOPE_EXECUTION = 2;
+    uint256 private constant SCOPE_EXECUTION_AND_PAYMENT = 3;
     uint256 private constant SCHEME_ARBITRARY = 0;
     uint256 private constant FORS_BASE_LEN = 2593; // JardinForsPlainVerifier: 2593 + 16h, h in [2,8]
     uint256 private constant SPX_LEN = 6512;
@@ -119,6 +134,7 @@ contract PQVault {
     event Executed(bytes32 indexed sigHash, uint256 guardianMask, uint256 calls);
     event BatchFailed(bytes32 indexed sigHash, bytes reason);
     event LeafRaced(bytes32 indexed sigHash, bytes32 indexed slotId, uint256 q);
+    event ApprovalRejected(bytes32 indexed sigHash, uint256 index, uint8 reason); // two-frame shape only
 
     error NotSelf();
     error BadShape();
@@ -248,39 +264,78 @@ contract PQVault {
         _approve(scope);
     }
 
-    // =================================================================== SENDER frame (2)
+    /// @notice Two-frame fallback, VERIFY frame 0 (scope EXECUTION_AND_PAYMENT). Calldata: selector only.
+    ///         Checks entry 0 (compact) over firstMessageFor(sigHash, restHash), pins frame 1 to execute().
+    function validateAndCommit() external {
+        if (msg.data.length != 4) revert BadShape();
+        uint256 t = THRESHOLD;
+        Ctx memory c = _frame(1);
+        if (c.frameCount != 2 || c.curFrame != 0 || c.sigCount != t) revert BadShape();
+        if (
+            c.fMode != MODE_SENDER || c.fTarget != uint256(uint160(address(this)))
+                || bytes4(c.fWord0) != this.execute.selector || c.fFlags != 0
+        ) revert BadShape();
+        if (c.maxCost > MAX_TX_COST) revert TxTooExpensive();
+
+        bytes32 rest = _restHash(t);
+        (Ctx memory c0, bytes memory e0) = _introspect(0, NONE, NONE);
+        // Only a compact approval fits the 100k budget; refuse a stateless one before verifying it.
+        if (c0.scheme == SCHEME_ARBITRARY && e0.length >= 2 && uint8(e0[1]) != SIG_COMPACT) revert BadEntry(0, R_KIND);
+        Approval memory a = _check(c0, e0, NONE, firstMessageFor(c.sigHash, rest));
+        if (a.reason == R_STALE) revert StaleLeaf(a.slotId, a.q);
+        if (a.reason != 0) revert BadEntry(0, a.reason);
+
+        _approve(SCOPE_EXECUTION_AND_PAYMENT);
+    }
+
+    // =================================================================== SENDER frame (last)
     struct Call {
         address to;
         uint256 value;
         bytes data;
     }
 
-    /// @notice Body frame: consume every approving leaf, then run the batch atomically.
-    /// @dev Reached only after both VERIFY frames approved, and validate() pins frame 2 to this
-    ///      function, so every entry has already been verified; entries are only decoded here.
+    /// @notice Body frame: (two-frame shape: verify entries [1, t)), consume every approving leaf, then run
+    ///         the batch atomically.
+    /// @dev The vault approves execution only from validate() (three frames, pins frame 2 here) or
+    ///      validateAndCommit() (two frames, pins frame 1 here), so the frame count tells which ran. In the
+    ///      three-frame shape every entry was verified in VERIFY and is only decoded here.
     function execute(Call[] calldata calls) external onlySelf {
         uint256 t = THRESHOLD;
-        bytes32 sigHash;
-        uint256 mask;
-        bool raced;
-        for (uint256 i = 0; i < t; i++) {
-            (Ctx memory c, bytes memory e) = _introspect(i, NONE, Q_OFFSET + 1);
-            sigHash = c.sigHash;
-            Approval memory a = _decode(c, e);
-            if (a.reason != 0) revert BadEntry(i, a.reason); // unreachable after validate(); defensive
-            mask |= 1 << a.guardian;
-            if (address(LEDGER) != address(0) && a.kind == SIG_COMPACT) {
-                // Atomic check-and-update. A leaf consumed by another transaction since validation
-                // (a race) fails here; the remaining leaves are still consumed (their signatures are
-                // public now) and nothing is executed.
-                try LEDGER.consume(a.slotId, a.q) {}
-                catch {
-                    raced = true;
-                    emit LeafRaced(sigHash, a.slotId, a.q);
+        (Ctx memory c0, bytes memory e0) = _introspect(0, NONE, Q_OFFSET + 1);
+        bool twoFrame = c0.frameCount == 2;
+        if (!twoFrame && c0.frameCount != 3) revert BadShape();
+        bytes32 sigHash = c0.sigHash;
+        Approval memory a0 = _decode(c0, e0);
+        if (a0.reason != 0) revert BadEntry(0, a0.reason); // verified in VERIFY frame 0; defensive
+        uint256 mask = 1 << a0.guardian;
+        // Leaf consumption is an atomic check-and-update. A leaf consumed by another transaction since
+        // validation (a race) fails here; the other leaves are still consumed (their signatures are public
+        // now) and nothing is executed.
+        bool blocked = !_consume(sigHash, a0);
+        bytes32 m = messageFor(sigHash);
+        uint256 prev = NONE;
+        for (uint256 i = 1; i < t; i++) {
+            Approval memory a;
+            if (twoFrame) {
+                (Ctx memory ci, bytes memory ei) = _introspect(i, NONE, NONE);
+                a = _check(ci, ei, prev, m);
+                if (a.reason == 0 && (mask >> a.guardian) & 1 == 1) a.reason = R_GUARDIAN; // same as entry 0
+                if (a.reason != 0) {
+                    emit ApprovalRejected(sigHash, i, a.reason);
+                    blocked = true;
+                    break;
                 }
+            } else {
+                (Ctx memory ci, bytes memory ei) = _introspect(i, NONE, Q_OFFSET + 1);
+                a = _decode(ci, ei);
+                if (a.reason != 0) revert BadEntry(i, a.reason); // verified in VERIFY; defensive
             }
+            prev = a.guardian;
+            mask |= 1 << a.guardian;
+            if (!_consume(sigHash, a)) blocked = true;
         }
-        if (raced) return;
+        if (blocked) return;
 
         try this.runBatch(calls) {
             emit Executed(sigHash, mask, calls.length);
@@ -351,9 +406,15 @@ contract PQVault {
         active = (info >> 8) == _epochs[g];
     }
 
-    /// @notice What every approving guardian signs.
+    /// @notice What every approving guardian signs (three-frame shape; entries 1..t-1 of the two-frame shape).
     function messageFor(bytes32 sigHash) public pure returns (bytes32) {
         return keccak256(abi.encode(DOMAIN, sigHash));
+    }
+
+    /// @notice What entry 0 signs in the two-frame shape: it also commits to every other entry's exact bytes.
+    /// @param restHash keccak256(keccak256(entry1) ‖ ... ‖ keccak256(entry t-1))
+    function firstMessageFor(bytes32 sigHash, bytes32 restHash) public pure returns (bytes32) {
+        return keccak256(abi.encode(DOMAIN, sigHash, restHash));
     }
 
     // =================================================================== internals
@@ -469,6 +530,37 @@ contract PQVault {
                 a.reason = R_SIG;
             }
         }
+    }
+
+    /// Consume a compact approval's leaf; false (and LeafRaced) if it was consumed since validation.
+    function _consume(bytes32 sigHash, Approval memory a) private returns (bool) {
+        if (address(LEDGER) == address(0) || a.kind != SIG_COMPACT) return true;
+        try LEDGER.consume(a.slotId, a.q) {
+            return true;
+        } catch {
+            emit LeafRaced(sigHash, a.slotId, a.q);
+            return false;
+        }
+    }
+
+    /// restHash for the two-frame shape: keccak256(keccak256(entry1) ‖ ... ‖ keccak256(entry t-1)).
+    /// Each entry's return buffer is released after hashing, so memory does not grow with t.
+    function _restHash(uint256 t) private view returns (bytes32) {
+        bytes memory hs = new bytes(32 * (t - 1));
+        for (uint256 i = 1; i < t; i++) {
+            uint256 fmp;
+            assembly {
+                fmp := mload(0x40)
+            }
+            (Ctx memory ci, bytes memory ei) = _introspect(i, NONE, NONE);
+            if (ci.scheme != SCHEME_ARBITRARY || ci.msgWord != 0) revert BadEntry(i, R_SCHEME);
+            bytes32 k = keccak256(ei);
+            assembly {
+                mstore(add(add(hs, 0x20), mul(sub(i, 1), 0x20)), k)
+                mstore(0x40, fmp)
+            }
+        }
+        return keccak256(hs);
     }
 
     /// Guardian index (first byte) of signature entry `i`, copying only that byte.

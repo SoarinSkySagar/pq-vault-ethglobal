@@ -14,10 +14,10 @@ def _rpc(method, params=None):
 
 
 class VaultTx(unittest.TestCase):
-    def build(self, kinds, calls=((VAULT, 1, "0x"),)):
+    def build(self, kinds, calls=((VAULT, 1, "0x"),), frames=3):
         with mock.patch.object(dv.rpc, "eth", _rpc), \
                 mock.patch.object(dv, "execute_calldata", lambda c: b"\x3f\x70\x7e\x6b" + b"\x00" * 64):
-            return dv.build_vault_tx(None, VAULT, list(calls), kinds)
+            return dv.build_vault_tx(None, VAULT, list(calls), kinds, frames=frames)
 
     def test_three_frames_only_verify_then_pay_then_sender(self):
         tx = self.build(["compact", "compact"])
@@ -40,11 +40,11 @@ class VaultTx(unittest.TestCase):
         self.assertEqual(tx.frames[1].data[4:], bytes([2, 3]))
 
     def test_declared_limits_cover_measured_validation_gas(self):
-        # Foundry measurements (contracts/test/PQVault.t.sol gas tests): 86,013 (1 compact),
-        # 154,438 (2 compact), 295,258 (1 stateless) per VERIFY frame.
-        self.assertGreaterEqual(dv.approval_gas(["compact"]), 86_013)
-        self.assertGreaterEqual(dv.approval_gas(["compact", "compact"]), 154_438)
-        self.assertGreaterEqual(dv.approval_gas(["stateless"]), 295_258)
+        # Foundry measurements (contracts/test/PQVault.t.sol gas tests): 86,135 (1 compact),
+        # 154,630 (2 compact), 295,410 (1 stateless) per VERIFY frame.
+        self.assertGreaterEqual(dv.approval_gas(["compact"]), 86_135)
+        self.assertGreaterEqual(dv.approval_gas(["compact", "compact"]), 154_630)
+        self.assertGreaterEqual(dv.approval_gas(["stateless"]), 295_410)
 
     def test_prefix_over_staked_budget_is_refused(self):
         with self.assertRaises(ValueError):
@@ -63,6 +63,50 @@ class VaultTx(unittest.TestCase):
         self.assertEqual((signers, kinds, idx), (["g0", "g2", "g3"], ["compact", "stateless", "compact"], [0, 2, 3]))
         with self.assertRaises(ValueError):
             dv.approver_plan(gs, (1, 1))
+
+
+class TwoFrameFallback(unittest.TestCase):
+    build = VaultTx.build
+
+    def test_shape_self_verify_then_sender(self):
+        tx = self.build(["compact", "compact"], frames=2)
+        f0, f1 = tx.frames
+        self.assertEqual((f0.mode, f0.flags, f0.target), (ft.MODE_VERIFY, ft.SCOPE_EXECUTION_AND_PAYMENT, None))
+        self.assertEqual(f0.data, dv.sel("validateAndCommit()"))
+        self.assertEqual(f0.execution + 100 * 2, dv.MAX_VERIFY_GAS)  # prefix + signature cost = 100k exactly
+        self.assertEqual((f1.mode, f1.flags), (ft.MODE_SENDER, 0))
+        tx3 = self.build(["compact"] * 3, frames=2)
+        self.assertEqual(tx3.frames[0].execution + 100 * 3, dv.MAX_VERIFY_GAS)
+
+    def test_stateless_committer_refused(self):
+        with self.assertRaises(ValueError):
+            self.build(["stateless", "compact"], frames=2)
+
+    def test_committer_first_then_increasing(self):
+        gs = ["g0", "g1", "g2", "g3"]
+        _, kinds, idx = dv.approver_plan(gs, (2, 0, 3), stateless=(0,), frames=2)
+        self.assertEqual((idx, kinds), ([2, 0, 3], ["compact", "stateless", "compact"]))  # g0 is SPX -> g2 commits
+        _, _, idx = dv.approver_plan(gs, (2, 0, 3), frames=2, committer=3)
+        self.assertEqual(idx, [3, 0, 2])
+        with self.assertRaises(ValueError):
+            dv.approver_plan(gs, (0, 1), stateless=(0, 1), frames=2)
+
+    def test_committer_signs_last_over_the_other_entries(self):
+        tx = self.build(["compact", "compact", "compact"], frames=2)
+        order, seen = [], {}
+
+        def fn(i):
+            def sign(m):
+                order.append(i)
+                seen[i] = m
+                return bytes([i]) * 40
+            return sign
+
+        sh = dv.sign_entries(tx, [fn(0), fn(1), fn(2)])
+        self.assertEqual(order[-1], 0)
+        self.assertEqual(seen[1], dv.vault_message(sh))
+        self.assertEqual(seen[2], dv.vault_message(sh))
+        self.assertEqual(seen[0], dv.first_message(sh, [bytes([1]) * 40, bytes([2]) * 40]))
 
 
 if __name__ == "__main__":

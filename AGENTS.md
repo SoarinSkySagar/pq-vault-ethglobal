@@ -22,11 +22,11 @@ Hard rules the user set (keep them):
 
 | Area | State |
 |---|---|
-| Contracts (`contracts/src`) | t-of-n `PQVault` (three frames: 2 VERIFY + 1 SENDER), `PQVaultFactory`, `LeafLedger`, `PQVaultFrameOps.yul` (introspection with `maxCopy`). Foundry: **29/29 pass** |
-| Python toolkit (`pqv/`) | frame-tx codec (matches ethrex golden vector), JARDIN wrapper, leaf stores, three-frame devnet driver, UI server, receipts generator. **25/25 unittest pass** |
+| Contracts (`contracts/src`) | t-of-n `PQVault` accepting two shapes: three frames (2 VERIFY + 1 SENDER, all approvals in VERIFY) and the two-frame fallback (1 VERIFY + SENDER) for combined-100k mempools; `PQVaultFactory`, `LeafLedger`, `PQVaultFrameOps.yul` (introspection with `maxCopy`). Foundry: **39/39 pass** |
+| Python toolkit (`pqv/`) | frame-tx codec (matches ethrex golden vector), JARDIN wrapper, leaf stores, devnet driver for both shapes (`--frames`, default 2 on `public`), UI server, receipts generator. **29/29 unittest pass** |
 | Alt mempool | `infra/sidecar-budget010/`: ERC-8421 [BUDGET-010] per-entity budgets for the workshop sidecar (patch, 7 new tests, 393/393 executor tests pass, image build). Draft upstream PR text in its README, **not submitted** |
-| Public hackathon devnet (chain 1337) | Historical: the *previous two-frame* 2-of-3 design, 9 frame txs, all 0x1 (`docs/RECEIPTS.md`). The current three-frame vault is **not** admitted there (deployed sidecar has the combined 100k cap) |
-| Local devnet (Kurtosis) | Three-frame t-of-n flow run on chain 3151908 with the [BUDGET-010] sidecar; stock-sidecar rejection recorded (see REPORT §8.1) |
+| Public hackathon devnet (chain 1337) | Historical: the previous 2-of-3 two-frame design, 9 frame txs, all 0x1 (`docs/RECEIPTS.md`). The current contract has **not** been deployed there (no guardian secrets/funded deployer on this machine); its two-frame shape is the one that gateway admits — proven with the same stock sidecar image locally |
+| Local devnet (Kurtosis) | Run 1 (`docs/RECEIPTS-three-frame.md`, commit ad291d5 bytecode): three-frame flow via [BUDGET-010] sidecar. Run 2 (`docs/RECEIPTS-two-frame-fallback.md`, current code): two-frame flow via the stock sidecar + both shapes via [BUDGET-010]. Run-1 state archived in `.devnet/local/run1-three-frame/` |
 | Research | `research/REPORT.md` complete (§1–10), results in `research/results/*.json|md` |
 | Demo | `demo/pq-vault-demo.mp4` (2:55), `demo/NARRATION.md`, `docs/DEMO.md` |
 | UI | `app/index.html` served by `python -m pqv.server <network>` |
@@ -59,8 +59,8 @@ third_party/JARDIN, SPHINCS-       git submodules, pinned (JARDIN has no LICENSE
 
 ```sh
 git submodule update --init
-(cd contracts && forge build && forge test)                    # 29 tests
-python3.12 -m unittest discover -s tests -t .                  # 25 tests (Ubuntu: use the uv python3.13, see §6)
+(cd contracts && forge build && forge test)                    # 39 tests
+python3.12 -m unittest discover -s tests -t .                  # 29 tests (Ubuntu: use the uv python3.13, see §6)
 python3.12 research/run_experiments.py --seeds 20              # ~10 min
 python3.12 research/sweeps.py --seeds 10
 python3.12 research/crash_test.py --kills 100
@@ -96,7 +96,17 @@ Without the guardian secrets in `.devnet/public/` that vault cannot be operated;
   go in `ARBITRARY` entries. Since the three-frame redesign every entry is verified in a VERIFY frame, so all guardians
   sign the same `messageFor(sigHash)` (domain `PQ-Vault/v2`) in any order; a relayer that corrupts any entry makes the
   tx invalid (no fee). The old two-frame `firstMessageFor` chaining (REPORT G6) is gone.
-- **Transaction shape** (PQVault.validate pins it): sigs = t ARBITRARY entries, guardian indices strictly increasing;
+- **Two shapes, chosen by frame count.** `execute()` branches on `len(frames)`: 3 → every entry was verified in
+  VERIFY (decode + consume only); 2 → `validateAndCommit()` verified entry 0 only, `execute()` verifies 1..t-1.
+  Two-frame entry 0 (committer, compact only) signs `firstMessageFor(sigHash, restHash)` *after* the others sign
+  `messageFor(sigHash)`; `restHash = keccak(keccak(e1)‖…‖keccak(e_{t-1}))`. VERIFY limit = 100,000 − 100·t.
+  The driver's default shape: `network.json` "frames", else 2 on `public`, 3 elsewhere (`--frames` overrides).
+- **Shared guardians, per-vault governance**: rotate/recover act on one vault (`vault` label); other vaults that use
+  the same guardians keep the old slots and refuse the new ones (`BadEntry(i, 5)`) until rotated there too.
+- **Debugging a silently dropped privileged tx**: ethrex logs the payload builder's skip reason only at debug level;
+  enable at runtime with `cast rpc --rpc-url <ethrex> admin_setLogLevel '"info,ethrex_blockchain=debug"'` and grep
+  `skipping IL tx`. A local reading copy of ethrex @ 9aa3645d can live in `vendor/` (gitignored).
+- **Transaction shape** (three frames; PQVault.validate pins it): sigs = t ARBITRARY entries, guardian indices strictly increasing;
   frame 0 VERIFY flags=2 (only_verify, target null) data `validate()‖0‖k`; frame 1 VERIFY flags=1 (pay, target vault)
   data `validate()‖k‖t`; frame 2 SENDER target vault, flags 0, `execute(calls)`. ERC-8421 PREFIX-010 allows at most
   these two VERIFY frames, so more approvals go *into* the two frames (k is chosen by `pqv.devnet.split_point`).
@@ -135,11 +145,14 @@ Without the guardian secrets in `.devnet/public/` that vault cannot be operated;
 2. **Per-vault nullifier variant** (REPORT §7.0): ledger in the vault's own storage — likely passes the canonical
    mempool; loses cross-vault protection. Build + measure admission on the public devnet.
 3. Get `[BUDGET-010]` into the deployed alt mempool: the patch + draft PR text are in `infra/sidecar-budget010/README.md`
-   (not submitted — the user decides). Until then t-of-n vaults run only against the patched sidecar (local devnet).
-4. Light-client verification of the LeafLedger mark (removes trust in the host/RPC).
-5. Hardware secure-element testing; real power-loss testing (SIGKILL ≠ power loss).
-6. Hackathon submission (repo link, video, CROPS section in README) — confirm with the user.
-7. Optional HyperFrames version of the demo video (needs the user to allow `npx hyperframes`).
+   (not submitted — the user decides). Until then the public gateway admits only the two-frame fallback.
+4. Redeploy the current contract on the public chain-1337 devnet and record two-frame receipts there (needs a
+   funded deployer from the devnet faucet; the flow is `deploy-infra` → `new-guardians` → `deploy-vault` → `transfer`).
+5. Light-client verification of the LeafLedger mark (removes trust in the host/RPC).
+6. Hardware secure-element testing; real power-loss testing (SIGKILL ≠ power loss).
+7. Hackathon submission (repo link, video, CROPS section in README). The demo video still shows the old 2-of-3
+   two-frame design; rebuild it (`demo/build_demo.py`) once public receipts for the current contract exist.
+8. Optional HyperFrames version of the demo video (needs the user to allow `npx hyperframes`).
 
 ## 8. Conventions
 

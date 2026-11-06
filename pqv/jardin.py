@@ -37,6 +37,19 @@ def vault_message(sig_hash: bytes) -> bytes:
     return keccak256(DOMAIN + sig_hash)
 
 
+def rest_hash(rest_entries) -> bytes:
+    """keccak256(keccak256(entry1) || ... || keccak256(entry t-1)) — PQVault._restHash."""
+    return keccak256(b"".join(keccak256(e) for e in rest_entries))
+
+
+def first_message(sig_hash: bytes, rest_entries) -> bytes:
+    """Two-frame fallback: what entry 0 (checked in the VERIFY frame) signs — PQVault.firstMessageFor.
+    It commits to the exact bytes of every other entry, which are only verified after payment is approved,
+    so a relayer cannot corrupt them. Entry 0's guardian therefore signs last."""
+    assert len(sig_hash) == 32
+    return keccak256(DOMAIN + sig_hash + rest_hash(rest_entries))
+
+
 def _b32(x: int) -> bytes:
     return x.to_bytes(32, "big")
 

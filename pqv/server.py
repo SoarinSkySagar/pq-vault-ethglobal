@@ -45,7 +45,8 @@ def status():
                         "balanceWei": str(int(rpc.eth("eth_getBalance", [vault, "latest"]), 16)),
                         "nonce": int(rpc.eth("eth_getTransactionCount", [vault, "latest"]), 16),
                         "threshold": dep.get("thresholds", {}).get("vault", 2),
-                        "guardians": len(net.load("guardians.json", []))}
+                        "guardians": len(net.load("guardians.json", [])),
+                        "frames": dv.net_frames(net)}
     if net.load("guardians.json"):
         for g in cached_guardians():
             slot = g.slot()
@@ -77,15 +78,16 @@ def demo_stale_restore(g_idx: int):
     dv_state = DurableLeafStore(stale_path)  # a freshly 'restored' backup: next_q = 1
     vault = net.deployment["vault"]
     t = net.deployment.get("thresholds", {}).get("vault", 2)
-    approvers = sorted([g_idx] + [x for x in range(len(gs)) if x != g_idx][:t - 1])
+    frames = dv.net_frames(net)
+    others = [x for x in range(len(gs)) if x != g_idx][:t - 1]
+    # entry order: three frames = increasing guardian index; two frames = the restored signer commits (entry 0),
+    # so its stale leaf is checked in the VERIFY frame in both shapes
+    approvers = [g_idx] + others if frames == 2 else sorted([g_idx] + others)
     # (b) baseline signer on the restored backup, together with t-1 honest approvals
-    tx = dv.build_vault_tx(net, vault, [(net.deployer(), 1, "0x")], ["compact"] * t)
-    sh = tx.sig_hash()
-    m = dv.vault_message(sh)
+    tx = dv.build_vault_tx(net, vault, [(net.deployer(), 1, "0x")], ["compact"] * t, frames=frames)
     q_stale = dv_state.reserve(slot.slot_id, slot.q_max)
-    for i, a in enumerate(approvers):
-        tx.signatures[i].signature = (dv.compact_entry(g_idx, slot, slot.sign(m, q_stale)) if a == g_idx
-                                      else gs[a].sign_compact(m))
+    dv.sign_entries(tx, [(lambda m: dv.compact_entry(g_idx, slot, slot.sign(m, q_stale))) if a == g_idx
+                         else dv.entry_signer(gs[a], "compact") for a in approvers])
     sim = dv.simulate(tx)
     # (a) PQ-Vault signer on the same restored backup
     anchored_q = max(1, hwm + 1)
@@ -133,7 +135,8 @@ class H(BaseHTTPRequestHandler):
             if self.path == "/api/transfer":
                 approvers = tuple(int(x) for x in body.get("approvers", body.get("pair", [0, 1])))
                 stateless = tuple(int(x) for x in body.get("stateless", []))
-                out = dv.cmd_transfer(NET, body["to"], int(body["wei"]), approvers, stateless)
+                out = dv.cmd_transfer(NET, body["to"], int(body["wei"]), approvers, stateless,
+                                      frames=body.get("frames"), committer=body.get("committer"))
             elif self.path == "/api/rotate":
                 out = dv.cmd_rotate(NET, int(body["guardian"]))
             elif self.path == "/api/recover":

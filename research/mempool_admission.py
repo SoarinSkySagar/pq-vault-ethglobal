@@ -24,20 +24,23 @@ def main(argv=None):
     ap.add_argument("--vault", default="vault")
     ap.add_argument("--guardians", default="0,1")
     ap.add_argument("--stateless", default="")
+    ap.add_argument("--frames", type=int, choices=[2, 3], default=None)
     a = ap.parse_args(argv)
     net = dv.Net(a.network)
     gs = dv.guardians(net)
     approvers = tuple(int(x) for x in a.guardians.split(","))
     stateless = tuple(int(x) for x in a.stateless.split(",") if x)
-    signers, kinds, idx = dv.approver_plan(gs, approvers, stateless)
+    frames = a.frames or dv.net_frames(net)
+    signers, kinds, idx = dv.approver_plan(gs, approvers, stateless, frames)
     vault = net.deployment[a.vault]
-    tx = dv.build_vault_tx(net, vault, [(net.deployer(), 1, "0x")], kinds)
+    tx = dv.build_vault_tx(net, vault, [(net.deployer(), 1, "0x")], kinds, frames=frames)
     sh = dv.sign_vault_tx(tx, signers, kinds)
     sim = dv.simulate(tx)
     rec = {"tag": a.tag, "time": int(time.time()), "vault": vault, "vaultLabel": a.vault,
            "threshold": net.deployment.get("thresholds", {}).get(a.vault), "guardians": idx, "kinds": kinds,
-           "sigHash": dv.h(sh), "declaredVerifyLimits": [tx.frames[0].execution, tx.frames[1].execution],
-           "split": tx.frames[0].data[5], "sidecar": net.cfg["sidecar"],
+           "sigHash": dv.h(sh), "frames": frames,
+           "declaredVerifyLimits": [f.execution for f in tx.frames if f.mode == 1],
+           "split": tx.frames[0].data[5] if frames == 3 else None, "sidecar": net.cfg["sidecar"],
            "simulation": {k: sim.get(k) for k in ("valid", "prefixShape", "canonicalMempoolViolation",
                                                   "executionStatus", "gasUsed", "frames", "executionError")}}
     try:
