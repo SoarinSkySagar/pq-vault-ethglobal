@@ -1,7 +1,10 @@
 """A personal PQ-Vault wallet (MetaMask-style), one per process, for demos with several users.
 
-    python -m pqv.wallet <name> [--port 8201] [--network local]
-    infra/wallets.sh start alice bob carol      # several wallets, one port each
+    python -m pqv.wallet <name> [--port 8201] [--network local] [--lan [--lan-port 9201]]
+    infra/wallets.sh start [--lan] alice bob carol      # several wallets, one port each
+
+The page (app/wallet/) is an installable mobile web app. With --lan a second listener serves it over HTTPS to phones
+on the same network; its /api/ calls need the wallet's pairing code (pqv/lan.py). Keys never leave this process.
 
 Each wallet is its own account: a 2-of-3 PQ-Vault smart account whose three JARDIN keys live on this computer
 (.devnet/<network>/wallets/<name>/). It shares the network's contracts (factory, LeafLedger, verifiers) with every
@@ -16,6 +19,7 @@ throwaway devnet deployer (the only ECDSA key in the project), which also pays f
     POST /api/send {to, wei}      pay, signed by the two keys with the most leaves left             -> {job}
     POST /api/network {ethrex, sidecar}   connect to another node / mempool
     GET  /api/jobs/<id>
+    GET  /api/pair                (loopback only) phone URL, pairing code and QR code, if --lan is on
 
 Shared 2-of-3 multisig vaults with other wallets (pqv/multisig.py):
     POST /api/vaults {name, guardians: [two other wallet names]}       create; invites the other two
@@ -37,6 +41,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import devnet as dv
+from . import lan
 from . import multisig as ms
 from . import rpc
 from . import server as srv
@@ -52,6 +57,10 @@ CREATE_FUND_ETH, CREATE_STAKE_ETH = 1.0, 0.02
 EST_GAS = 380_000              # billed gas of a compact+compact transfer (docs/RECEIPTS-local.md)
 MAX_COST_RESERVE = 5 * 10**15  # the account must hold value + the tx's maximum cost when payment is approved
 W = None
+LAN = None                     # {"url", "code", "port"} when phones may connect (--lan)
+ACCENTS = ["#2F6F5E", "#3B5BA9", "#7C4A9E", "#2C7DA0", "#6A7B2E", "#A04E68"]  # same as app/wallet/index.html
+CTYPES = {"html": "text/html; charset=utf-8", "js": "text/javascript; charset=utf-8", "css": "text/css; charset=utf-8",
+          "svg": "image/svg+xml", "png": "image/png", "webmanifest": "application/manifest+json"}
 
 
 class WalletNet(dv.Net):
@@ -260,11 +269,55 @@ def op_send(to, wei):
 
 
 # ----------------------------------------------------------------------------- HTTP
+def manifest():
+    a = account()
+    name = W.wallet[:1].upper() + W.wallet[1:]
+    icons = [{"src": f"/icons/icon-{n}.png", "sizes": f"{n}x{n}", "type": "image/png", "purpose": p}
+             for p in ("any", "maskable") for n in (192, 512)]
+    return {"id": "/", "name": f"{name}'s PQ Wallet", "short_name": name, "start_url": "/", "scope": "/",
+            "display": "standalone", "orientation": "portrait", "background_color": "#FFFFFF",
+            "theme_color": ACCENTS[int(a[2:4], 16) % len(ACCENTS)] if a else ACCENTS[1],
+            "description": "A 2-of-3 post-quantum smart-account wallet on a devnet. Keys stay on the wallet computer.",
+            "icons": icons}
+
+
 class H(srv.H):
+    @property
+    def _lan(self):
+        return getattr(self.server, "gate", None) is not None
+
+    def _denied(self):
+        """None if the request may proceed; on the LAN listener every /api/ call needs the pairing code."""
+        if not self._lan or not self.path.startswith("/api/"):
+            return None
+        r = self.server.gate.check(self.headers.get("authorization", ""))
+        if r == "ok":
+            return None
+        if r == "locked":
+            return self._send(429, {"error": "Too many wrong pairing codes; try again in a minute.", "pair": True}) or True
+        return self._send(401, {"error": "Wrong pairing code." if r == "wrong" else "This phone is not paired.",
+                                "pair": True}) or True
+
     def do_GET(self):
+        if self._denied():
+            return
+        path = self.path.split("?")[0].split("#")[0]
         try:
-            if self.path == "/api/state":
-                return self._send(200, state())
+            if path == "/api/state":
+                return self._send(200, dict(state(), remote=self._lan))
+            if path == "/api/pair":
+                if self._lan:
+                    return self._send(404, {"error": "not found"})
+                if not LAN:
+                    return self._send(200, {"enabled": False})
+                link = f"{LAN['url']}/#pair={LAN['code']}"
+                return self._send(200, {"enabled": True, "url": LAN["url"], "code": LAN["code"], "link": link,
+                                        "qr": lan.qr_svg(link), "caUrl": LAN["url"] + "/ca.crt"})
+            if path == "/manifest.webmanifest":
+                return self._send(200, json.dumps(manifest()).encode(), CTYPES["webmanifest"])
+            if path == "/ca.crt":
+                b = lan.ca_cert_bytes()
+                return self._send(200, b, "application/x-x509-ca-cert") if b else self._send(404, {"error": "no CA"})
             if self.path == "/api/activity":
                 return self._send(200, activity())
             if self.path == "/api/quote":
@@ -275,17 +328,18 @@ class H(srv.H):
             if self.path.startswith("/api/jobs/"):
                 job = srv.JOBS.get(self.path.rsplit("/", 1)[-1])
                 return self._send(200, job) if job else self._send(404, {"error": "unknown job"})
-            f = "index.html" if self.path in ("/", "/index.html") else self.path.split("?")[0].lstrip("/")
+            f = "index.html" if path in ("/", "/index.html") else path.lstrip("/")
             p = os.path.realpath(os.path.join(APP, f))
-            if not p.startswith(os.path.realpath(APP)) or not os.path.isfile(p):
+            if not p.startswith(os.path.realpath(APP) + os.sep) or not os.path.isfile(p):
                 return self._send(404, {"error": "not found"})
-            ctype = {"html": "text/html", "js": "text/javascript", "css": "text/css", "svg": "image/svg+xml"}.get(
-                p.rsplit(".", 1)[-1], "text/plain")
-            return self._send(200, open(p, "rb").read(), ctype + "; charset=utf-8")
+            ctype = CTYPES.get(p.rsplit(".", 1)[-1], "text/plain; charset=utf-8")
+            return self._send(200, open(p, "rb").read(), ctype)
         except Exception as e:
             return self._send(500, {"error": srv._friendly(e)})
 
     def do_POST(self):
+        if self._denied():
+            return
         n = int(self.headers.get("content-length", 0))
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
@@ -369,13 +423,42 @@ def main():
     ap.add_argument("name", help="wallet name (lowercase letters, digits, dashes)")
     ap.add_argument("--port", type=int, default=8201)
     ap.add_argument("--network", default="local", choices=["local", "public"])
+    ap.add_argument("--lan", action="store_true", help="also serve the app to phones on this network (HTTPS + pairing code)")
+    ap.add_argument("--lan-port", type=int, help="HTTPS port for phones (default: --port + 1000)")
     a = ap.parse_args()
     if not re.match(r"^[a-z0-9][a-z0-9-]{0,23}$", a.name):
         raise SystemExit("wallet name: lowercase letters, digits and dashes, up to 24 characters")
     W = WalletNet(a.network, a.name)
     httpd = ThreadingHTTPServer(("127.0.0.1", a.port), H)
-    print(f"{a.name}'s PQ-Vault wallet on http://127.0.0.1:{a.port}")
+    print(f"{a.name}'s PQ-Vault wallet on http://127.0.0.1:{a.port}", flush=True)
+    lan_file = os.path.join(W.dir, "lan.json")
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(lan_file)
+    if a.lan:
+        start_lan(a.lan_port or a.port + 1000, lan_file)
     httpd.serve_forever()
+
+
+def start_lan(port, lan_file):
+    global LAN
+    import ssl
+    import threading
+    ips = lan.lan_ips()
+    if not ips:
+        raise SystemExit("--lan: this computer has no LAN address")
+    crt, key = lan.ensure_cert(ips)
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(crt, key)
+    https = ThreadingHTTPServer(("0.0.0.0", port), type("HLan", (H,), {"timeout": 30}))
+    # handshake lazily in each connection's own thread, so one slow phone cannot stall accept()
+    https.socket = ctx.wrap_socket(https.socket, server_side=True, do_handshake_on_connect=False)
+    https.gate = lan.Gate(lan.pairing_code(W.dir))
+    LAN = {"url": f"https://{ips[0]}:{port}", "code": lan.pairing_code(W.dir), "port": port, "ips": ips}
+    with open(lan_file, "w") as f:
+        json.dump({"url": LAN["url"], "port": port, "ips": ips}, f)
+    threading.Thread(target=https.serve_forever, daemon=True).start()
+    print(f"phones: {LAN['url']}  (pairing code in {os.path.join(W.dir, 'pair-code')}; CA: .devnet/tls/ca.crt)", flush=True)
 
 
 if __name__ == "__main__":
