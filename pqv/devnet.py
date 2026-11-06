@@ -418,7 +418,7 @@ def vault_call(net: Net, calls, approvers=(0, 1), stateless=(), label="vault cal
     brief = {k: sim.get(k) for k in ("valid", "prefixShape", "violation", "canonicalMempoolViolation", "executionStatus",
                                      "gasUsed", "frames", "executionError", "failedFrameIndex", "haltReason", "revertData")}
     print("simulate:", json.dumps(brief))
-    if sim.get("executionStatus") not in (None, "success"):
+    if sim.get("executionStatus") != "success":
         raise RuntimeError(f"simulated execution failed: {brief}")
     print(f"submitting: to {net.cfg['sidecar']}")
     out = submit(net, tx)

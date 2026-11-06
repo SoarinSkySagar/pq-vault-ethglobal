@@ -50,6 +50,31 @@ class Jardin(unittest.TestCase):
         self.assertEqual(vault_message(sh), keccak256(keccak256(b"PQ-Vault/v2") + sh))
 
 
+class ThreadSafety(unittest.TestCase):
+    def test_concurrent_slot_building_and_signing_stays_correct(self):
+        """Upstream JARDIN hashes through shared module buffers; pqv.jardin serialises calls (wallet servers are
+        multi-threaded: page polling builds key trees while a request signs)."""
+        import threading
+        master = keccak256(b"thread-master")
+        ref = [CompactSlot(master, keccak256(bytes([i])), 3) for i in range(3)]
+        bad = []
+
+        def work(i):
+            s = CompactSlot(master, keccak256(bytes([i % 3])), 3)
+            for q in range(1, 9):
+                m = keccak256(bytes([i, q]))
+                sig = s.sign(m, q)
+                if s.root16 != ref[i % 3].root16 or not ref[i % 3].verify(m, sig):
+                    bad.append((i, q))
+
+        ts = [threading.Thread(target=work, args=(i,)) for i in range(6)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        self.assertEqual(bad, [])
+
+
 class Stores(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()

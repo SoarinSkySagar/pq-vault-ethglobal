@@ -16,6 +16,14 @@ throwaway devnet deployer (the only ECDSA key in the project), which also pays f
     POST /api/send {to, wei}      pay, signed by the two keys with the most leaves left             -> {job}
     POST /api/network {ethrex, sidecar}   connect to another node / mempool
     GET  /api/jobs/<id>
+
+Shared 2-of-3 multisig vaults with other wallets (pqv/multisig.py):
+    POST /api/vaults {name, guardians: [two other wallet names]}       create; invites the other two
+    GET  /api/vaults/<id>                                             detail, proposals, activity
+    POST /api/vaults/<id>/join                                        accept an invitation (makes this wallet's key)
+    POST /api/vaults/<id>/deploy                                      once all three joined          -> {job}
+    POST /api/vaults/<id>/propose {to, wei}                           propose + approve a payment
+    POST /api/vaults/<id>/proposals/<pid>/approve                     second approval submits it     -> {job}
 """
 import argparse
 import contextlib
@@ -29,6 +37,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import devnet as dv
+from . import multisig as ms
 from . import rpc
 from . import server as srv
 from .hashing import ROOT, keccak256
@@ -93,7 +102,7 @@ def _guardians():
 
 
 def contacts():
-    out = []
+    out = [{"name": v["name"], "address": v["address"], "vault": True} for v in ms.all_vaults(W) if v.get("address")]
     for p in sorted(glob.glob(os.path.join(W.shared_dir, "wallets", "*", "deployment.json"))):
         name = os.path.basename(os.path.dirname(p))
         if name == W.wallet:
@@ -101,6 +110,43 @@ def contacts():
         v = json.load(open(p)).get("vault")
         if v:
             out.append({"name": name, "address": v})
+    return out
+
+
+def vault_summary(v):
+    me = next((m for m in v["members"] if m["wallet"] == W.wallet), None)
+    out = {"id": v["id"], "name": v["name"], "status": v["status"], "address": v.get("address"), "creator": v["creator"],
+           "members": [{"wallet": m["wallet"], "index": m["index"], "joined": bool(m["pub"]), "me": m["wallet"] == W.wallet}
+                       for m in v["members"]],
+           "invited": bool(me and not me["pub"]), "balanceWei": None, "pending": 0, "awaitingMe": 0}
+    if v.get("address"):
+        out["balanceWei"] = str(int(rpc.eth("eth_getBalance", [v["address"], "latest"]), 16))
+        ms.expire_stale(W, v)
+        for p in ms.proposals(W, v["id"]):
+            if p["status"] in ("pending", "ready"):
+                out["pending"] += 1
+                if me and str(me["index"]) not in p["approvals"]:
+                    out["awaitingMe"] += 1
+    return out
+
+
+def my_vaults():
+    return [vault_summary(v) for v in ms.all_vaults(W) if any(m["wallet"] == W.wallet for m in v["members"])]
+
+
+def vault_detail(vid):
+    v = ms.load_vault(W, vid)
+    out = vault_summary(v)
+    me = next((m for m in v["members"] if m["wallet"] == W.wallet), None)
+    out["myIndex"] = me["index"] if me else None
+    out["proposals"] = [{k: p.get(k) for k in ("id", "proposer", "to", "wei", "status", "txHash", "block", "error",
+                                                 "created", "submitter", "kinds")}
+                        | {"approvals": [{"index": int(i), "wallet": a["wallet"], "kind": a["kind"]}
+                                         for i, a in sorted(p["approvals"].items())]}
+                        for p in ms.proposals(W, vid)]
+    out["activity"] = activity(v["address"], v.get("createdBlock", 0)) if v.get("address") else []
+    g = ms.my_guardian(W, v) if v.get("address") else None
+    out["myKey"] = {"remaining": g.remaining_leaves(), "leaves": g.slot().q_max} if g else None
     return out
 
 
@@ -113,6 +159,9 @@ def state():
     except Exception as e:
         out["network"]["error"] = str(e)[:200]
         return out
+    out["vaults"] = my_vaults()
+    out["wallets"] = sorted(os.path.basename(d) for d in glob.glob(os.path.join(W.shared_dir, "wallets", "*"))
+                            if os.path.isdir(d) and os.path.basename(d) != W.wallet)
     a = account()
     if a:
         out["account"] = {"address": a, "balanceWei": str(int(rpc.eth("eth_getBalance", [a, "latest"]), 16))}
@@ -135,15 +184,17 @@ def _names():
     for k, label in (("factory", "Account setup"), ("staking", "Mempool stake")):
         if d.get(k):
             n[d[k].lower()] = label
+    if account():
+        n[account().lower()] = W.wallet
     return n
 
 
-def activity():
-    a = account()
+def activity(a=None, created=None):
+    a = a or account()
     if not a:
         return []
     pad = "0x" + "0" * 24 + a[2:].lower()
-    start = hex(W.deployment.get("createdBlock", 0))
+    start = hex(W.deployment.get("createdBlock", 0) if created is None else created)
     names, rows = _names(), []
     for direction, topics in (("in", [TRANSFER, None, pad]), ("out", [TRANSFER, pad])):
         for l in rpc.eth("eth_getLogs", [{"fromBlock": start, "toBlock": "latest", "address": EIP7708, "topics": topics}]):
@@ -218,6 +269,9 @@ class H(srv.H):
                 return self._send(200, activity())
             if self.path == "/api/quote":
                 return self._send(200, quote())
+            m = re.match(r"^/api/vaults/([0-9a-f]{10})$", self.path)
+            if m:
+                return self._send(200, vault_detail(m[1]))
             if self.path.startswith("/api/jobs/"):
                 job = srv.JOBS.get(self.path.rsplit("/", 1)[-1])
                 return self._send(200, job) if job else self._send(404, {"error": "unknown job"})
@@ -250,6 +304,42 @@ class H(srv.H):
                 if wei > int(quote()["maxSendWei"]):
                     return self._send(400, {"error": "Not enough ETH for this amount plus the network fee."})
                 job = srv.start_job("send", lambda: op_send(to, wei))
+            elif self.path == "/api/vaults":
+                return self._send(200, ms.create(W, body.get("name", ""), body.get("guardians", [])))
+            elif re.match(r"^/api/vaults/[0-9a-f]{10}/", self.path):
+                parts = self.path.split("/")
+                vid, action = parts[3], parts[4]
+                if action == "join":
+                    return self._send(200, ms.join(W, vid))
+                if action == "deploy":
+                    job = srv.start_job("vault-deploy", lambda: ms.deploy(W, vid, deployer_lock))
+                elif action == "propose":
+                    to, wei = str(body.get("to", "")).strip(), int(body.get("wei", 0))
+                    v = ms.load_vault(W, vid)
+                    if not ADDR.match(to):
+                        return self._send(400, {"error": "Enter a 0x address with 40 hex characters."})
+                    if to.lower() == (v.get("address") or "").lower():
+                        return self._send(400, {"error": "That is the vault's own address."})
+                    bal = int(rpc.eth("eth_getBalance", [v["address"], "latest"]), 16) if v.get("address") else 0
+                    if wei <= 0 or wei > bal - MAX_COST_RESERVE:
+                        return self._send(400, {"error": "Enter an amount the vault can cover, leaving 0.005 ETH for the fee."})
+                    p = ms.propose(W, vid, to, wei)
+                    return self._send(200, {"proposal": p["id"]})
+                elif action == "proposals" and len(parts) == 7 and parts[6] == "approve":
+                    pid = parts[5]
+                    if not pid.isalnum():
+                        return self._send(400, {"error": "bad proposal id"})
+                    p, ready = ms.approve(W, vid, pid)
+                    if not ready:
+                        return self._send(200, {"approvals": len(p["approvals"])})
+                    job = srv.start_job("vault-payment", lambda: ms.submit(W, vid, pid))
+                elif action == "proposals" and len(parts) == 7 and parts[6] == "submit":
+                    pid = parts[5]
+                    if not pid.isalnum():
+                        return self._send(400, {"error": "bad proposal id"})
+                    job = srv.start_job("vault-payment", lambda: ms.submit(W, vid, pid))
+                else:
+                    return self._send(404, {"error": "unknown endpoint"})
             elif self.path == "/api/network":
                 ethrex, sidecar = str(body.get("ethrex", "")).strip(), str(body.get("sidecar", "")).strip()
                 if not ethrex.startswith("http") or not sidecar.startswith("http"):

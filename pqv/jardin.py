@@ -10,8 +10,10 @@ Slot derivation follows the JARDIN write-up (sub-key from HMAC-SHA512 over the m
 fresh per-slot random value r), feeding JARDIN's own `jardin_derive_keys`.
 """
 import contextlib
+import functools
 import io
 import os
+import threading
 from dataclasses import dataclass
 
 from .hashing import enable_jardin_imports, keccak256
@@ -41,9 +43,24 @@ def _b32(x: int) -> bytes:
     return x.to_bytes(32, "big")
 
 
+# The upstream JARDIN hash hot path writes into shared module-level buffers (jardin_primitives._BUF96/_BUF128),
+# so two threads computing JARDIN hashes at once corrupt each other's results (seen as a wrong slot root inside a
+# signature entry). Every call into the upstream signers is serialised process-wide. Upstream code is unchanged.
+_JARDIN = threading.RLock()
+
+
+def _serialized(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _JARDIN:
+            return fn(*args, **kwargs)
+    return wrapper
+
+
 class SpxMaster:
     """A guardian's stateless master key (JARDIN plain SPHINCS+, 6,512-byte signatures)."""
 
+    @_serialized
     def __init__(self, master_sk: bytes):
         assert len(master_sk) == 32
         self.sk_seed, self.sk_prf, self.pk_seed = _S.derive_spx_keys(master_sk)
@@ -53,10 +70,12 @@ class SpxMaster:
     def public(self):
         return _b32(self.pk_seed), _b32(self.pk_root)
 
+    @_serialized
     def sign(self, message: bytes, counter: int = 0) -> bytes:
         return _S.spx_sign(self.pk_seed, self.sk_seed, self.sk_prf, self.pk_root,
                            int.from_bytes(message, "big"), counter)
 
+    @_serialized
     def verify(self, message: bytes, sig: bytes) -> bool:
         return _S.spx_verify(self.pk_seed, self.pk_root, int.from_bytes(message, "big"), sig)
 
@@ -69,6 +88,7 @@ class CompactSlot:
     (pqv.state), which is what the research in research/ attacks and hardens.
     """
 
+    @_serialized
     def __init__(self, master_sk: bytes, r: bytes, h: int = 7):
         assert len(r) == 32 and 2 <= h <= 8
         self.r, self.h = r, h
@@ -93,6 +113,7 @@ class CompactSlot:
     def slot_id(self) -> bytes:
         return keccak256(self.seed16 + self.root16)
 
+    @_serialized
     def sign(self, message: bytes, q: int) -> bytes:
         if not 1 <= q <= self.q_max:
             raise ValueError(f"leaf q={q} outside [1, {self.q_max}]: slot exhausted")
@@ -100,9 +121,11 @@ class CompactSlot:
                                               int.from_bytes(message, "big"), q, self.h)
         return sig
 
+    @_serialized
     def verify(self, message: bytes, sig: bytes) -> bool:
         return _F.fors_plain_verify(self.pk_seed, self.pk_root, int.from_bytes(message, "big"), sig)
 
+    @_serialized
     def revealed_secrets(self, message: bytes, q: int):
         """(tree t, leaf index) pairs whose FORS secrets a signature on `message` at leaf q reveals.
         Used by research/ to measure reuse damage; mirrors the upstream index derivation."""
