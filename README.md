@@ -82,6 +82,14 @@ about 20 s). Then: balance, **Send** (pick another wallet or paste an address, r
 **Receive**, **Add test ETH**, activity (sent and received, read from the chain), key health, and network settings
 (node RPC and alt-mempool URLs). Each account gets its own colour and avatar, so side-by-side windows stay distinct.
 
+**Shared multisig vaults.** From the Vaults tab a wallet creates a 2-of-3 PQ multisig vault with two other wallets
+as co-guardians. They accept the invitation in their own windows (each gets a dedicated post-quantum key for the
+vault; only public keys are shared), then the vault is created on chain. Any guardian proposes a payment, which
+approves it with their key; when a second guardian approves in their wallet, the payment is sent as a three-frame
+transaction (VERIFY guardian A, VERIFY guardian B, SENDER). Anyone can deposit by sending to the vault. The wallets
+exchange invitations, public keys and signatures through `.devnet/local/vaults/` (a local stand-in for a relay;
+it never holds a secret key).
+
 Full local-devnet bring-up (including the native arm64 ethrex build for Apple Silicon): see
 [research/REPORT.md §10](research/REPORT.md#10-reproduce).
 

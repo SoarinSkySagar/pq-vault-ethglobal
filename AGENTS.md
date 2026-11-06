@@ -50,6 +50,9 @@ pqv/server.py, app/index.html      wallet website (127.0.0.1 only): /api/wallet,
 pqv/wallet.py, app/wallet/         personal MetaMask-style wallet, one process per person (infra/wallets.sh start a b c);
                                    state in .devnet/<net>/wallets/<name>/, shared contracts underneath (WalletNet);
                                    activity from EIP-7708 Transfer logs (0xfff…fffe); faucet/deploy via the deployer (file lock)
+pqv/multisig.py                    shared 2-of-3 vaults between wallets: invite/join/deploy, propose/approve/submit; shared
+                                   folder .devnet/<net>/vaults/<id>/ under flock; VERIFY limits sized for SPX so the tx is
+                                   fixed before signing; a proposal expires when the vault nonce moves
 pqv/receipts.py                    regenerates docs/RECEIPTS.md from the chain
 pqv/_shim/Crypto/Hash/keccak.py    stdlib KECCAK-256 adapter so JARDIN's Python imports work without pycryptodome
 research/                          policies.py, sim.py, run_experiments.py, sweeps.py, crash_test.py, mempool_admission.py, REPORT.md, results/
@@ -106,6 +109,9 @@ Without the guardian secrets in `.devnet/public/` that vault cannot be operated;
   with refresh off (no recursion) and keep the slot height. Rotation is per vault (`vault_label`): other vaults that
   share the guardian set keep the old slot until rotated there too. `research/slot_refresh_e2e.py` exercises it with
   4-leaf slots (`new-guardians --slot-h 2`).
+- **JARDIN is not thread-safe**: upstream's hash hot path uses shared module buffers (`jardin_primitives._BUF96/_BUF128`).
+  `pqv/jardin.py` serialises every call (`_serialized`); never call the upstream signers directly from threaded code
+  (both web servers are multi-threaded). Symptom when violated: a signature entry with a wrong slot root → `BadEntry(i, 5)`.
 - **Debugging a silently dropped privileged tx**: ethrex logs the payload builder's skip reason only at debug level;
   enable at runtime with `cast rpc --rpc-url <ethrex> admin_setLogLevel '"info,ethrex_blockchain=debug"'` and grep
   `skipping IL tx`. A local reading copy of ethrex @ 9aa3645d can live in `vendor/` (gitignored).

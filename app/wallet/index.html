@@ -109,6 +109,33 @@
   .big-done { text-align: center; padding: 8px 0 4px; }
   .big-done .amt { font-size: 28px; font-weight: 600; }
 
+  .badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 6px; border-radius: 999px; background: var(--acc); color: #fff;
+    font-size: 12px; line-height: 18px; text-align: center; }
+  .vrow { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 12px; align-items: center; width: 100%; text-align: left; border: 0;
+    border-bottom: 1px solid var(--rule); background: none; padding: 12px 20px; cursor: pointer; }
+  .vrow:hover { background: var(--soft); }
+  .vrow .avatar { grid-row: span 2; width: 32px; height: 32px; border-radius: 8px; }
+  .invite { margin: 12px 0; padding: 12px; border: 1px solid var(--acc); border-radius: 12px; }
+  .invite .btns { margin-top: 10px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip-btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--rule); background: var(--panel); border-radius: 999px;
+    padding: 5px 12px; cursor: pointer; text-transform: capitalize; }
+  .chip-btn[aria-pressed=true] { border-color: var(--acc); background: var(--acc); color: #fff; }
+  .members { list-style: none; padding: 0; margin: 10px 0 0; }
+  .members li { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--rule); text-transform: capitalize; }
+  .members .st { text-transform: none; color: var(--slate); font-size: 13px; }
+  .members .st.ok { color: var(--plus); }
+  .prop { border: 1px solid var(--rule); border-radius: 12px; padding: 12px; margin-top: 10px; }
+  .prop .head { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; }
+  .prop .appr { font-size: 13px; color: var(--slate); margin: 6px 0 0; }
+  .prop .btn { margin-top: 10px; padding: 9px 14px; }
+  .status { font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--rule); color: var(--slate); white-space: nowrap; }
+  .status.sent { border-color: var(--plus); color: var(--plus); }
+  .status.wait { border-color: var(--acc); color: var(--acc); }
+  .status.bad { border-color: var(--bad); color: var(--bad); }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0 4px; }
+  .msg { font-size: 14px; padding: 10px 12px; border-radius: 10px; background: var(--soft); margin: 12px 0 0; }
+  .msg.bad { color: var(--bad); }
   .recv { text-align: center; }
   .recv .avatar { margin: 0 auto 14px; }
   .recv code { display: block; font-family: var(--mono); font-size: 15px; line-height: 1.7; word-spacing: 6px; padding: 14px; background: var(--soft);
@@ -139,6 +166,7 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&
 const short = (a) => a ? a.slice(0, 6) + "…" + a.slice(-4) : "";
 const ACCENTS = ["#2F6F5E", "#3B5BA9", "#7C4A9E", "#2C7DA0", "#6A7B2E", "#A04E68"];
 let S = null, A = [], screen = "home", tab = "activity", busy = false, sendDraft = { to: "", amount: "" }, jobView = null;
+let V = null, vaultId = null, vaultMsg = null, newVault = { name: "", picked: [] }, propDraft = { to: "", amount: "" }, jobReturn = "home";
 
 async function api(path, body) {
   const r = await fetch(path, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
@@ -191,9 +219,11 @@ async function refresh() {
     try { A = await api("/api/activity"); } catch { /* keep the last list */ }
   }
   document.title = S ? `${cap(S.name)}'s PQ Wallet` : "PQ Wallet";
-  if (!busy) render();
+  if (vaultId && (screen === "vault" || screen === "propose")) { try { V = await api("/api/vaults/" + vaultId); } catch { /* keep */ } }
+  if (!busy && !isTyping()) render();
 }
 const cap = (s) => s ? s[0].toUpperCase() + s.slice(1) : s;
+const isTyping = () => ["send", "review", "propose", "newvault", "network"].includes(screen);
 
 // ---- screens ----
 function render() {
@@ -202,8 +232,11 @@ function render() {
   if (screen === "network") return v.innerHTML = networkScreen();
   if (!S.network.connected) { v.innerHTML = networkScreen(true); return; }
   if (!S.account) { v.innerHTML = setupScreen(); return; }
-  v.innerHTML = { home: homeScreen, send: sendScreen, review: reviewScreen, receive: receiveScreen, job: jobScreen }[screen]();
+  v.innerHTML = { home: homeScreen, send: sendScreen, review: reviewScreen, receive: receiveScreen, job: jobScreen,
+                  vault: vaultScreen, propose: proposeScreen, newvault: newVaultScreen }[screen]();
   if (screen === "send") { $("to").value = sendDraft.to; $("amt").value = sendDraft.amount; }
+  if (screen === "propose") { $("pto").value = propDraft.to; $("pamt").value = propDraft.amount; }
+  if (screen === "newvault") $("vname").value = newVault.name;
 }
 
 function homeScreen() {
@@ -219,9 +252,10 @@ function homeScreen() {
     </div>
     <div class="tabs" role="tablist">
       <button class="tab" role="tab" type="button" data-tab="activity" aria-selected="${tab === "activity"}">Activity</button>
+      <button class="tab" role="tab" type="button" data-tab="vaults" aria-selected="${tab === "vaults"}">Vaults${vaultBadge()}</button>
       <button class="tab" role="tab" type="button" data-tab="keys" aria-selected="${tab === "keys"}">Keys</button>
     </div>
-    ${tab === "activity" ? activityList() : keysList()}
+    ${tab === "activity" ? activityList() : tab === "vaults" ? vaultsList() : keysList()}
   </div>`;
 }
 
@@ -248,6 +282,7 @@ function keysList() {
 
 function sendScreen() {
   const cs = S.contacts.map((c) => `<button class="contact" type="button" data-to="${esc(c.address)}">${avatar(c.address)}${esc(c.name)}</button>`).join("");
+  // vaults appear here too, so "Deposit" from a vault page is just a send to its address
   return `<div class="screen"><button class="back" type="button" data-go="home">← Back</button><h2>Send ETH</h2>
     <form id="send-form" novalidate>
       <div class="field"><label class="f" for="to">To</label>
@@ -275,6 +310,124 @@ function reviewScreen() {
     <p class="pq">Two of your three post-quantum keys will sign this payment on this computer. The network checks both
       signatures before your account pays any fee.</p>
     <div class="btns"><button class="btn ghost" type="button" data-go="home">Cancel</button><button class="btn" type="button" data-do="confirm">Confirm</button></div></div>`;
+}
+
+// ---------- multisig vaults ----------
+function vaultBadge() {
+  const n = (S.vaults || []).reduce((k, v) => k + v.awaitingMe + (v.invited ? 1 : 0), 0);
+  return n ? `<span class="badge" aria-label="${n} waiting for you">${n}</span>` : "";
+}
+function vaultState(v) {
+  if (v.status === "active") return `${eth(v.balanceWei)} ETH`;
+  const joined = v.members.filter((m) => m.joined).length;
+  if (v.status === "deploying") return "Being created…";
+  return joined < 3 ? `Waiting for guardians, ${joined} of 3 joined` : "Ready to create";
+}
+function vaultsList() {
+  const vs = S.vaults || [];
+  const invites = vs.filter((v) => v.invited).map((v) => `<div class="invite">
+      <strong>${esc(cap(v.creator))}</strong> invited you to guard <strong>${esc(v.name)}</strong>, a vault where any 2 of
+      ${v.members.map((m) => esc(cap(m.wallet))).join(", ")} must approve each payment.
+      <div class="btns"><button class="btn ghost" type="button" data-vault="${v.id}">View</button>
+      <button class="btn" type="button" data-join="${v.id}">Accept</button></div></div>`).join("");
+  const rows = vs.filter((v) => !v.invited).map((v) => `<button class="vrow" type="button" data-vault="${v.id}">
+      ${avatar(v.address || hexOf(v.id))}<span class="t">${esc(v.name)}${v.awaitingMe ? `<span class="badge">${v.awaitingMe}</span>` : ""}</span>
+      <span class="v">${vaultState(v)}</span>
+      <span class="s">2 of 3: ${v.members.map((m) => esc(m.me ? "you" : m.wallet)).join(", ")}</span><span></span></button>`).join("");
+  return `${invites}<div class="list" style="margin-top:${invites ? 0 : 0}">${rows}</div>
+    ${!vs.length ? `<p class="empty">No shared vaults yet. A vault holds funds that any two of three people must approve to move.</p>` : ""}
+    <div style="margin-top:16px"><button class="btn ghost" type="button" data-go="newvault" ${(S.wallets || []).length < 2 ? "disabled" : ""}>Create a multisig vault</button></div>
+    ${(S.wallets || []).length < 2 ? `<p class="note">Start at least two other wallets to create a vault with them.</p>` : ""}`;
+}
+
+function newVaultScreen() {
+  const chips = (S.wallets || []).map((w) => `<button class="chip-btn" type="button" data-pickw="${esc(w)}"
+      aria-pressed="${newVault.picked.includes(w)}">${avatar(hexOf(w))}${esc(w)}</button>`).join("");
+  return `<div class="screen"><button class="back" type="button" data-go="home">← Back</button><h2>Create a multisig vault</h2>
+    <form id="vault-form" novalidate>
+      <div class="field"><label class="f" for="vname">Vault name</label><input class="in" id="vname" placeholder="Family savings" maxlength="40" autocomplete="off"></div>
+      <div class="field"><span class="f" style="display:block;font-weight:600;margin-bottom:8px">Choose two co-guardians</span>
+        <div class="chips">${chips}</div></div>
+      <p class="pq">${newVault.picked.length === 2 ? `You, ${cap(newVault.picked[0])} and ${cap(newVault.picked[1])}`
+        : newVault.picked.length === 1 ? `You, ${cap(newVault.picked[0])} and one more person` : "You and the two people you choose"} each hold
+        one post-quantum key. Any two of the three must approve every payment from the vault. They are asked to accept first.</p>
+      <div class="err" id="v-err"></div>
+      <button class="btn" type="submit" ${newVault.picked.length === 2 ? "" : "disabled"}>Send invitations</button>
+    </form></div>`;
+}
+
+function proposalStatus(p) {
+  return p.status === "sent" ? `<span class="status sent">Sent</span>`
+    : p.status === "pending" ? `<span class="status wait">Needs approval</span>`
+    : p.status === "ready" ? `<span class="status wait">Approved</span>`
+    : p.status === "submitting" ? `<span class="status wait">Sending…</span>`
+    : `<span class="status bad">${esc(cap(p.status))}</span>`;
+}
+function friendlyErr(e) {
+  if (/expired/i.test(e)) return "Another vault payment went first; propose it again.";
+  if (/rejected|reverted|simulat/i.test(e)) return "The network rejected it; propose it again.";
+  return e.slice(0, 120);
+}
+function vaultScreen() {
+  if (!V) return `<div class="screen"><button class="back" type="button" data-go="home">← Back</button><p class="muted">Loading…</p></div>`;
+  const me = V.members.find((m) => m.me), joined = V.members.filter((m) => m.joined).length;
+  const members = V.members.map((m) => `<li><span>${esc(m.wallet)}${m.me ? " (you)" : ""}</span>
+      <span class="st ${m.joined ? "ok" : ""}">${m.joined ? (V.status === "active" ? "guardian" : "accepted") : "invited"}</span></li>`).join("");
+  let top;
+  if (V.status === "active") {
+    top = `<div class="bal" style="margin:18px 0 14px"><span class="amt">${eth(V.balanceWei)}</span><span class="unit">ETH</span></div>
+      <div class="two"><button class="btn" type="button" data-go="propose">Propose payment</button>
+        <button class="btn ghost" type="button" data-deposit="${esc(V.address)}">Deposit</button></div>`;
+  } else if (V.invited) {
+    top = `<p class="msg">${esc(cap(V.creator))} invited you. Accepting creates your key for this vault on this computer.</p>
+      <div class="two"><button class="btn ghost" type="button" data-go="home">Not now</button><button class="btn" type="button" data-join="${V.id}">Accept</button></div>`;
+  } else if (joined === 3 && V.status === "inviting") {
+    top = `<p class="msg">Everyone accepted. Create the vault on chain (the devnet pays the 0.02 ETH mempool stake and adds 0.5 test ETH).</p>
+      <button class="btn" type="button" data-deploy="${V.id}" style="margin-top:12px">Create vault</button>`;
+  } else {
+    top = `<p class="msg">Waiting for ${V.members.filter((m) => !m.joined).map((m) => esc(cap(m.wallet))).join(" and ")} to accept.</p>`;
+  }
+  const props = (V.proposals || []).slice(0, 12).map((p) => {
+    const mine = me && p.approvals.some((a) => a.index === me.index);
+    const toName = (S.contacts.find((c) => c.address.toLowerCase() === p.to.toLowerCase()) || {}).name
+      || (S.account && S.account.address.toLowerCase() === p.to.toLowerCase() ? "you" : short(p.to));
+    const action = p.status === "pending" && !mine ? `<button class="btn" type="button" data-approve="${p.id}">Approve</button>`
+      : p.status === "ready" || (p.status === "failed" && p.approvals.length >= 2) ? `<button class="btn" type="button" data-submitp="${p.id}">Send now</button>` : "";
+    return `<div class="prop"><div class="head"><span>Pay ${eth(p.wei, 18)} ETH to ${esc(cap(toName))}</span>${proposalStatus(p)}</div>
+      <p class="appr">Approved by ${p.approvals.map((a) => esc(a.wallet === S.name ? "you" : cap(a.wallet)) + (a.kind === "stateless" ? " (stateless)" : "")).join(" and ")},
+        ${p.approvals.length} of 2${p.block ? `, block ${p.block.toLocaleString("en-US")}` : ""}${p.status === "expired" ? ". Another vault payment went first; propose it again." : ""}${p.status === "failed" && p.error ? `. ${esc(friendlyErr(p.error))}` : ""}</p>${action}</div>`;
+  }).join("");
+  const acts = (V.activity || []).slice(0, 10).map((r) => `<li><span class="t">${esc(describe(r).replace("Account created", "Vault created"))}</span>
+      <span class="v ${r.direction === "in" ? "plus" : ""}">${r.direction === "in" ? "+" : "−"}${eth(r.wei)} ETH</span>
+      <span class="s">block ${r.block.toLocaleString("en-US")}</span><span></span></li>`).join("");
+  return `<div class="screen"><button class="back" type="button" data-go="home">← Back</button>
+    <div class="who">${avatar(V.address || hexOf(V.id))}<div><h1 style="text-transform:none">${esc(V.name)}</h1>
+      ${V.address ? `<button class="addr-btn" type="button" data-copy="${esc(V.address)}">${short(V.address)}, copy</button>` : `<span class="muted small">2 of 3 multisig vault</span>`}</div></div>
+    ${vaultMsg ? `<p class="msg ${vaultMsg.bad ? "bad" : ""}">${esc(vaultMsg.text)}</p>` : ""}
+    ${top}
+    <h2 style="margin-top:22px;font-size:15px">Guardians, any 2 of 3 approve</h2><ul class="members">${members}</ul>
+    ${V.myKey ? `<p class="note">Your key for this vault: ${V.myKey.remaining} of ${V.myKey.leaves} approvals left.</p>` : ""}
+    ${V.status === "active" ? `<h2 style="margin-top:22px;font-size:15px">Payments</h2>${props || `<p class="empty">No payments yet.</p>`}
+      ${acts ? `<h2 style="margin-top:22px;font-size:15px">Activity</h2><ul class="list">${acts}</ul>` : ""}` : ""}</div>`;
+}
+
+function proposeScreen() {
+  const opts = [...(S.account ? [{ name: "you", address: S.account.address }] : []), ...S.contacts.filter((c) => !V || c.address.toLowerCase() !== (V.address || "").toLowerCase())];
+  const cs = opts.map((c) => `<button class="contact" type="button" data-pto="${esc(c.address)}">${avatar(c.address)}${esc(c.name)}</button>`).join("");
+  return `<div class="screen"><button class="back" type="button" data-go="vault">← Back</button><h2>Propose a payment from ${esc(V ? V.name : "the vault")}</h2>
+    <form id="prop-form" novalidate>
+      <div class="field"><label class="f" for="pto">To</label><input class="in mono" id="pto" placeholder="0x…" autocomplete="off" spellcheck="false">
+        <div class="contacts">${cs}</div><div class="err" id="pto-err"></div></div>
+      <div class="field"><label class="f" for="pamt">Amount</label><input class="in" id="pamt" placeholder="0.0" inputmode="decimal" autocomplete="off">
+        <div class="small muted" style="margin-top:6px">Vault balance: ${V ? eth(V.balanceWei) : "…"} ETH</div><div class="err" id="pamt-err"></div></div>
+      <p class="pq">Your key approves it now. It is sent as soon as one more guardian approves in their own wallet.</p>
+      <button class="btn" type="submit">Propose and approve</button></form></div>`;
+}
+
+async function openVault(id, msg) {
+  vaultId = id; vaultMsg = msg || null; screen = "vault"; V = null; render();
+  try { V = await api("/api/vaults/" + id); } catch (e) { vaultMsg = { text: e.message, bad: true }; }
+  render();
 }
 
 function receiveScreen() {
@@ -316,8 +469,9 @@ function jobScreen() {
   const steps = j.steps.map((s, i) => `<li class="${s.err ? "err" : i === j.steps.length - 1 && j.running ? "now" : "done"}">${esc(s.text)}</li>`).join("");
   let end = "";
   if (!j.running) {
-    end = j.ok ? `<div class="big-done">${j.done}</div><div class="btns" style="grid-template-columns:1fr"><button class="btn" type="button" data-go="home">Back to wallet</button></div>`
-               : `<div class="btns" style="grid-template-columns:1fr"><button class="btn ghost" type="button" data-go="home">Back to wallet</button></div>`;
+    const back = jobReturn === "vault" ? "Back to the vault" : "Back to wallet";
+    end = j.ok ? `<div class="big-done">${j.done}</div><div class="btns" style="grid-template-columns:1fr"><button class="btn" type="button" data-go="${jobReturn}">${back}</button></div>`
+               : `<div class="btns" style="grid-template-columns:1fr"><button class="btn ghost" type="button" data-go="${jobReturn}">${back}</button></div>`;
   }
   return `<div class="screen"><h2>${esc(j.title)}</h2><ul class="steps" aria-live="polite">${steps}</ul>${end}</div>`;
 }
@@ -335,9 +489,10 @@ const STEP = {
   submitting: () => "Sent to the mempool, waiting for a block",
   included: (e) => `Confirmed in block ${e.block.toLocaleString("en-US")}`,
 };
+STEP.log = ((base) => (e) => base(e) || (/^vault: deploying/.test(e.text) ? "Creating the vault on chain" : null))(STEP.log);
 
-async function runJob(path, body, title, doneHtml) {
-  busy = true; screen = "job";
+async function runJob(path, body, title, doneHtml, back = "home") {
+  busy = true; screen = "job"; jobReturn = back;
   jobView = { title, steps: [{ text: "Starting…" }], running: true }; render();
   let id;
   try { id = (await api(path, body)).job; } catch (e) {
@@ -359,11 +514,52 @@ async function runJob(path, body, title, doneHtml) {
   if (screen === "job") render();
 }
 
+async function watchJob(id, title, doneHtml) {
+  busy = true; screen = "job"; jobReturn = "vault";
+  jobView = { title, steps: [{ text: "Signing with your vault key" }], running: true }; render();
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 900));
+    let j; try { j = await api("/api/jobs/" + id); } catch { continue; }
+    const steps = [{ text: "Approved with your vault key" }];
+    for (const e of j.events) { const f = STEP[e.type]; const tx = f && f(e); if (tx && steps[steps.length - 1].text !== tx) steps.push({ text: tx }); }
+    if (j.state === "error") steps.push({ text: j.error, err: true });
+    jobView = { title, steps, running: j.state === "running", ok: j.state === "done", done: doneHtml };
+    render();
+    if (j.state !== "running") break;
+  }
+  busy = false; await refresh();
+}
+
 // ---- events ----
 document.addEventListener("click", async (ev) => {
   const t = ev.target.closest("button"); if (!t) return;
   if (t.id === "settings-btn" || t.id === "net-pill") { screen = "network"; return render(); }
-  if (t.dataset.go) { if (busy && screen === "job" && jobView && jobView.running) return; screen = t.dataset.go; return render(); }
+  if (t.dataset.go) {
+    if (busy && screen === "job" && jobView && jobView.running) return;
+    if (t.dataset.go === "vault" && vaultId) return openVault(vaultId);
+    screen = t.dataset.go; if (screen === "home") vaultMsg = null; return render();
+  }
+  if (t.dataset.vault) return openVault(t.dataset.vault);
+  if (t.dataset.pickw) {
+    const w = t.dataset.pickw; newVault.name = $("vname").value;
+    newVault.picked = newVault.picked.includes(w) ? newVault.picked.filter((x) => x !== w) : [...newVault.picked, w].slice(-2);
+    return render();
+  }
+  if (t.dataset.join) {
+    try { await api(`/api/vaults/${t.dataset.join}/join`, {}); await refresh(); return openVault(t.dataset.join, { text: "You joined. Your key for this vault is ready." }); }
+    catch (e) { return openVault(t.dataset.join, { text: e.message, bad: true }); }
+  }
+  if (t.dataset.deploy) return runJob(`/api/vaults/${t.dataset.deploy}/deploy`, {}, "Creating the vault", "<p>The vault is ready.</p>", "vault");
+  if (t.dataset.deposit) { sendDraft = { to: t.dataset.deposit, amount: "" }; screen = "send"; return render(); }
+  if (t.dataset.pto) { $("pto").value = t.dataset.pto; propDraft.to = t.dataset.pto; return; }
+  if (t.dataset.approve) {
+    let r;
+    try { r = await api(`/api/vaults/${vaultId}/proposals/${t.dataset.approve}/approve`, {}); }
+    catch (e) { return openVault(vaultId, { text: e.message, bad: true }); }
+    if (!r.job) return openVault(vaultId, { text: "Approved. It is sent when one more guardian approves." });
+    return watchJob(r.job, "Sending the vault payment", "<p>Paid from the vault.</p>");
+  }
+  if (t.dataset.submitp) return runJob(`/api/vaults/${vaultId}/proposals/${t.dataset.submitp}/submit`, {}, "Sending the vault payment", "<p>Paid from the vault.</p>", "vault");
   if (t.dataset.tab) { tab = t.dataset.tab; return render(); }
   if (t.dataset.copy) {
     const prev = t.textContent;
@@ -398,6 +594,22 @@ document.addEventListener("submit", async (ev) => {
     if ($("to-err").textContent || $("amt-err").textContent) return;
     quote = q; screen = "review"; return render();
   }
+  if (ev.target.id === "vault-form") {
+    newVault.name = $("vname").value.trim();
+    try { const v = await api("/api/vaults", { name: newVault.name, guardians: newVault.picked }); newVault = { name: "", picked: [] };
+          await refresh(); return openVault(v.id, { text: "Invitations sent. The vault is created once both accept." }); }
+    catch (e) { $("v-err").textContent = e.message; } return;
+  }
+  if (ev.target.id === "prop-form") {
+    const to = $("pto").value.trim(), amt = $("pamt").value.trim(), wei = ethToWei(amt);
+    propDraft = { to, amount: amt };
+    $("pto-err").textContent = /^0x[0-9a-fA-F]{40}$/.test(to) ? "" : "Enter a 0x address with 40 hex characters.";
+    $("pamt-err").textContent = wei === null || wei <= 0n ? "Enter an amount such as 0.05." : "";
+    if ($("pto-err").textContent || $("pamt-err").textContent) return;
+    try { await api(`/api/vaults/${vaultId}/propose`, { to, wei: wei.toString() }); propDraft = { to: "", amount: "" };
+          return openVault(vaultId, { text: "Proposed and approved by you. One more guardian must approve." }); }
+    catch (e) { $("pamt-err").textContent = e.message; } return;
+  }
   if (ev.target.id === "net-form") {
     try { await api("/api/network", { ethrex: $("rpc").value.trim(), sidecar: $("mp").value.trim() }); screen = "home"; await refresh(); }
     catch (e) { $("net-err").textContent = e.message; }
@@ -405,7 +617,7 @@ document.addEventListener("submit", async (ev) => {
 });
 
 refresh();
-setInterval(() => { if (!busy && (screen === "home" || !S || !S.network.connected)) refresh(); }, 4000);
+setInterval(() => { if (!busy && (["home", "vault"].includes(screen) || !S || !S.network.connected)) refresh(); }, 4000);
 </script>
 </body>
 </html>
