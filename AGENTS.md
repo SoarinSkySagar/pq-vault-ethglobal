@@ -6,7 +6,7 @@ devnet evidence: `docs/RECEIPTS.md`.
 
 ## 1. What this project is
 
-**PQ-Vault**: a 2-of-3 post-quantum guardian wallet on **EIP-8141 frame transactions** submitted through the
+**PQ-Vault**: a t-of-n post-quantum guardian wallet (n ≤ 16 guardians, threshold 2 ≤ t ≤ n, fixed at creation) on **EIP-8141 frame transactions** submitted through the
 **ERC-8421 alternative mempool**, using **JARDIN** hash-based signatures (SPHINCS- family). Built for ETHGlobal
 Mumbai 2026. Plus **research** on whether *stateful* hash-based signing survives crashes, stale backups, cloned
 devices, interrupted signing and state rollback — with attacks, a mitigation, and measurements.
@@ -22,10 +22,11 @@ Hard rules the user set (keep them):
 
 | Area | State |
 |---|---|
-| Contracts (`contracts/src`) | `PQVault`, `PQVaultFactory`, `LeafLedger`, `PQVaultFrameOps.yul`. Foundry: **20/20 pass** |
-| Python toolkit (`pqv/`) | frame-tx codec (matches ethrex golden vector), JARDIN wrapper, leaf stores, devnet driver, UI server, receipts generator. **19/19 unittest pass** |
-| Public hackathon devnet (chain 1337) | Infra + staked vault deployed; 9 frame txs incl. transfers, stateless 2nd approval, rotation, recovery, UI transfer, live attack. All status 0x1. See `docs/RECEIPTS.md` |
-| Local devnet (Kurtosis) | Same flow reproduced (chain 3151908) |
+| Contracts (`contracts/src`) | t-of-n `PQVault` (three frames: 2 VERIFY + 1 SENDER), `PQVaultFactory`, `LeafLedger`, `PQVaultFrameOps.yul` (introspection with `maxCopy`). Foundry: **29/29 pass** |
+| Python toolkit (`pqv/`) | frame-tx codec (matches ethrex golden vector), JARDIN wrapper, leaf stores, three-frame devnet driver, UI server, receipts generator. **25/25 unittest pass** |
+| Alt mempool | `infra/sidecar-budget010/`: ERC-8421 [BUDGET-010] per-entity budgets for the workshop sidecar (patch, 7 new tests, 393/393 executor tests pass, image build). Draft upstream PR text in its README, **not submitted** |
+| Public hackathon devnet (chain 1337) | Historical: the *previous two-frame* 2-of-3 design, 9 frame txs, all 0x1 (`docs/RECEIPTS.md`). The current three-frame vault is **not** admitted there (deployed sidecar has the combined 100k cap) |
+| Local devnet (Kurtosis) | Three-frame t-of-n flow run on chain 3151908 with the [BUDGET-010] sidecar; stock-sidecar rejection recorded (see REPORT §8.1) |
 | Research | `research/REPORT.md` complete (§1–10), results in `research/results/*.json|md` |
 | Demo | `demo/pq-vault-demo.mp4` (2:55), `demo/NARRATION.md`, `docs/DEMO.md` |
 | UI | `app/index.html` served by `python -m pqv.server <network>` |
@@ -33,7 +34,7 @@ Hard rules the user set (keep them):
 ## 3. Repo map
 
 ```
-contracts/src/PQVault.sol          2-of-3 vault: validate() [VERIFY frame], execute() [SENDER frame], guardian mgmt
+contracts/src/PQVault.sol          t-of-n vault: validate() [both VERIFY frames], execute() [SENDER frame], guardian mgmt
 contracts/src/LeafLedger.sol       per-slot high-water mark (monotone nullifier) + reportEquivocation
 contracts/src/PQVaultFactory.sol   CREATE2 factory; owns the ledger; useLedger=false = JARDIN baseline vault
 contracts/src/PQVaultFrameOps.yul  EIP-8141 opcode helper (TXPARAM/SIGPARAM/SIGDATACOPY/FRAMEPARAM/FRAMEDATALOAD/APPROVE)
@@ -41,14 +42,15 @@ contracts/src/Verifiers.sol        imports upstream JardinForsPlainVerifier / Ja
 contracts/src/external/            NaiveStakingRegistry (copied, MIT) — only deployed on local devnets
 contracts/test/                    PQVault.t.sol, mocks (MockFrameOps, CodeBlobFrameOps), fixtures + generator
 pqv/frametx.py, rlp.py             EIP-8141 frame tx codec (chain-1337 / ethrex 9aa3645d layout)
-pqv/jardin.py                      guardian keys over upstream JARDIN signers; entry encoding; vault_message/first_message
+pqv/jardin.py                      guardian keys over upstream JARDIN signers; entry encoding; vault_message (domain PQ-Vault/v2)
 pqv/state.py                       DurableLeafStore (burn-before-sign), AnchoredLeafStore (chain-anchored)
 pqv/devnet.py                      CLI: deploy-infra, new-guardians, deploy-vault, transfer, rotate, recover, attack-stale-restore
 pqv/server.py, app/index.html      local UI (127.0.0.1 only)
 pqv/receipts.py                    regenerates docs/RECEIPTS.md from the chain
 pqv/_shim/Crypto/Hash/keccak.py    stdlib KECCAK-256 adapter so JARDIN's Python imports work without pycryptodome
-research/                          policies.py, sim.py, run_experiments.py, sweeps.py, crash_test.py, REPORT.md, results/
-infra/                             local-devnet.sh (Kurtosis), build-ethrex-arm64.sh, sidecar-local.sh, kurtosis/*.yaml
+research/                          policies.py, sim.py, run_experiments.py, sweeps.py, crash_test.py, mempool_admission.py, REPORT.md, results/
+infra/                             local-devnet.sh (Kurtosis), build-ethrex-arm64.sh, sidecar-local.sh, kurtosis/*.yaml,
+                                   sidecar-budget010/ (ERC-8421 per-entity budget patch + build.sh)
 demo/build_demo.py                 rebuilds the video from recorded data (Chrome headless + `say` + ffmpeg)
 third_party/JARDIN, SPHINCS-       git submodules, pinned (JARDIN has no LICENSE file → never copy it, keep as submodule)
 ```
@@ -57,8 +59,8 @@ third_party/JARDIN, SPHINCS-       git submodules, pinned (JARDIN has no LICENSE
 
 ```sh
 git submodule update --init
-(cd contracts && forge build && forge test)                    # 20 tests
-python3.12 -m unittest discover -s tests -t .                  # 19 tests
+(cd contracts && forge build && forge test)                    # 29 tests
+python3.12 -m unittest discover -s tests -t .                  # 25 tests (Ubuntu: use the uv python3.13, see §6)
 python3.12 research/run_experiments.py --seeds 20              # ~10 min
 python3.12 research/sweeps.py --seeds 10
 python3.12 research/crash_test.py --kills 100
@@ -66,8 +68,10 @@ python3.12 -m pqv.devnet public status                         # public devnet
 python3.12 -m pqv.server public --port 8143                    # UI
 python3.12 -m pqv.receipts public local                        # regenerate docs/RECEIPTS.md
 ```
-Devnet flow (fresh machine): `deploy-infra` → `new-guardians` → `deploy-vault --fund 0.3 --stake 0.02` →
-`transfer <to> <wei> --guardians 0,1 [--second stateless]` → `rotate <g>` → `recover <g>` → `attack-stale-restore`.
+Devnet flow (fresh machine): `deploy-infra` → `new-guardians [--n 4]` → `deploy-vault --threshold 2 --fund 0.3 --stake 0.02
+[--vault label]` → `transfer <to> <wei> --guardians 0,1 [--stateless 1] [--vault label]` → `rotate <g>` → `recover <g>` →
+`attack-stale-restore`. Needs a sidecar with [BUDGET-010]: `infra/sidecar-budget010/build.sh`, then
+`SIDECAR_IMAGE=pqvault/mempool-sidecar:budget-010 infra/sidecar-local.sh <ethrex-port> <staking>`.
 Local devnet bring-up: `research/REPORT.md` §10.
 
 ## 5. State that is NOT in git (by design)
@@ -85,14 +89,28 @@ Without the guardian secrets in `.devnet/public/` that vault cannot be operated;
 
 ## 6. Traps that cost hours (read before debugging)
 
-- **Python**: use Homebrew `python3.12` (OpenSSL ≥ 3.2 → native `KECCAK-256`). System `python3` 3.9/LibreSSL has no keccak.
+- **Python**: needs OpenSSL ≥ 3.2 for native `KECCAK-256`: Homebrew `python3.12` on macOS; on the Ubuntu box the system
+  `python3.12` has OpenSSL 3.0 (no keccak) → use the uv-managed `~/.local/share/uv/python/cpython-3.13.14-linux-x86_64-gnu/bin/python3`
+  (OpenSSL 3.5). `'KECCAK-256' in hashlib.algorithms_available` is False there but `hashlib.new("KECCAK-256")` works.
 - **Frame-tx sig hash** elides the bytes of every *empty-msg* signature entry; frame data is covered. PQ signatures
-  go in `ARBITRARY` entries. Guardian B signs `messageFor(sigHash)` *first*; guardian A signs
-  `firstMessageFor(sigHash, keccak(entryB))` — otherwise a relayer can corrupt entry B (fixed bug, see REPORT G6).
+  go in `ARBITRARY` entries. Since the three-frame redesign every entry is verified in a VERIFY frame, so all guardians
+  sign the same `messageFor(sigHash)` (domain `PQ-Vault/v2`) in any order; a relayer that corrupts any entry makes the
+  tx invalid (no fee). The old two-frame `firstMessageFor` chaining (REPORT G6) is gone.
+- **Transaction shape** (PQVault.validate pins it): sigs = t ARBITRARY entries, guardian indices strictly increasing;
+  frame 0 VERIFY flags=2 (only_verify, target null) data `validate()‖0‖k`; frame 1 VERIFY flags=1 (pay, target vault)
+  data `validate()‖k‖t`; frame 2 SENDER target vault, flags 0, `execute(calls)`. ERC-8421 PREFIX-010 allows at most
+  these two VERIFY frames, so more approvals go *into* the two frames (k is chosen by `pqv.devnet.split_point`).
 - **`ethrex_simulateFrameTransaction`**: `valid`/`canonicalMempoolViolation` is the *canonical* mempool verdict. PQ-Vault
   is expected to show `StorageReadNonSender` there; gate on `executionStatus == success`, not `valid`.
-- **Validation budget**: VERIFY limit 99,800 + 2×100 (ARBITRARY entries) = MAX_VERIFY_GAS. `validate()` ≈ 82k on chain.
-  The deployed sidecar caps the whole prefix at 100k even for staked senders (ERC-8421's 1M per-entity budget is not deployed).
+- **Validation budget**: a VERIFY frame costs ~86k with one compact approval, +~68k per further compact approval,
+  ~295k with one stateless (SPX) approval (Foundry gas tests). t ≥ 2 exceeds EIP-8141's combined MAX_VERIFY_GAS (100k).
+  The deployed workshop sidecar enforces that combined 100k even for staked senders; ERC-8421 [BUDGET-010] (per-entity,
+  1M staked) is implemented in `infra/sidecar-budget010/` (build.sh → `pqvault/mempool-sidecar:budget-010`; run with
+  `SIDECAR_IMAGE=pqvault/mempool-sidecar:budget-010 infra/sidecar-local.sh …`). ethrex's own simulate RPC only *notes*
+  the 100k overage in `canonicalMempoolViolation` and still traces, so ethrex needs no reconfiguration.
+- **Calldata floor**: ethrex bills frame txs at max(standard, 13,150 + 64 gas × bytes of frame data + signatures)
+  (EIP-7623/7976 floor, `transaction.rs:calldata_floor_gas`). PQ-Vault txs are floor-bound: execution-gas savings do
+  not lower the bill; fewer bytes do.
 - **Fresh contract accounts start at nonce 1.** The driver reads the nonce from the chain.
 - **Public devnet gas**: contract creation costs far more gas than locally (factory ~18M) — the driver estimates gas; don't hardcode.
 - **ethrex privileged relay** (local sidecar) gives each tx ONE payload build; the sidecar must re-relay
@@ -116,7 +134,8 @@ Without the guardian secrets in `.devnet/public/` that vault cannot be operated;
    stateless key) + on-device light-client verification of the lease.
 2. **Per-vault nullifier variant** (REPORT §7.0): ledger in the vault's own storage — likely passes the canonical
    mempool; loses cross-vault protection. Build + measure admission on the public devnet.
-3. Both signatures in VERIFY once an alt mempool deploys ERC-8421's `MAX_VERIFY_GAS_STAKED_ENTITY` (1M).
+3. Get `[BUDGET-010]` into the deployed alt mempool: the patch + draft PR text are in `infra/sidecar-budget010/README.md`
+   (not submitted — the user decides). Until then t-of-n vaults run only against the patched sidecar (local devnet).
 4. Light-client verification of the LeafLedger mark (removes trust in the host/RPC).
 5. Hardware secure-element testing; real power-loss testing (SIGKILL ≠ power loss).
 6. Hackathon submission (repo link, video, CROPS section in README) — confirm with the user.

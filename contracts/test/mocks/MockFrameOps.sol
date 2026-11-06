@@ -40,6 +40,14 @@ contract MockFrameOps {
         _sigs.push(entry);
     }
 
+    function setSig(uint256 i, bytes calldata entry) external {
+        _sigs[i] = entry;
+    }
+
+    function setCurFrame(uint256 f) external {
+        curFrame = f;
+    }
+
     function setScheme(uint256 s) external {
         sigScheme = s;
     }
@@ -54,7 +62,7 @@ contract MockFrameOps {
             }
             return "";
         }
-        (, uint256 a, uint256 b) = abi.decode(input, (uint256, uint256, uint256));
+        (, uint256 a, uint256 b, uint256 maxCopy) = abi.decode(input, (uint256, uint256, uint256, uint256));
         uint256[12] memory w;
         w[0] = uint256(sigHash);
         w[1] = maxCost;
@@ -64,9 +72,15 @@ contract MockFrameOps {
         bytes memory sig;
         if (a < _sigs.length) {
             w[5] = sigScheme;
-            sig = _sigs[a];
-            w[7] = sig.length;
-            if (sigScheme != 0) sig = new bytes(sig.length); // real helper copies only ARBITRARY bytes
+            bytes memory full = _sigs[a];
+            w[7] = full.length;
+            uint256 n = full.length < maxCopy ? full.length : maxCopy;
+            sig = new bytes(n); // real helper copies only ARBITRARY bytes (zeros otherwise)
+            if (sigScheme == 0) {
+                for (uint256 i = 0; i < n; i++) {
+                    sig[i] = full[i];
+                }
+            }
         } else {
             w[5] = type(uint256).max;
         }

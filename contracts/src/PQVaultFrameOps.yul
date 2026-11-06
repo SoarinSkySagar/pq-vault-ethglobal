@@ -13,12 +13,14 @@
 // Stateless and shared by every vault. Calldata (no selector):
 //   op = 1: APPROVE(scope = word 1). MUST be reached by DELEGATECALL from the account being
 //           approved (APPROVE checks ADDRESS == frame target; delegatecall keeps the vault's address).
-//   op = 0: introspect(sigIndex = word 1, frameIndex = word 2). Returns 12 words + signature bytes:
+//   op = 0: introspect(sigIndex = word 1, frameIndex = word 2, maxCopy = word 3). Returns 12 words +
+//           the first min(len(sig.signature), maxCopy) signature bytes:
 //     0 sigHash (TXPARAM 0x08)      4 len(signatures)          8  frame.mode
 //     1 maxCost (TXPARAM 0x06)      5 sig.scheme (~0 if none)  9  frame.resolved_target
 //     2 len(frames)                 6 sig.msg (0 = canonical)  10 frame.data[0:32]
 //     3 current frame index         7 len(sig.signature)       11 frame.flags
-//     then len(sig.signature) bytes (copied only for ARBITRARY entries; zeros otherwise).
+//     then the signature bytes (copied only for ARBITRARY entries; zeros otherwise). Word 7 always
+//     reports the full length; maxCopy lets a caller read only an entry's header (e.g. 1 byte).
 //   A missing signature / frame index is reported with sentinel ~0 instead of halting.
 object "PQVaultFrameOps" {
     code {
@@ -64,11 +66,14 @@ object "PQVaultFrameOps" {
                     mstore(0x100, not(0))
                 }
 
+                let copyLen := sigLen
+                let maxCopy := calldataload(96)
+                if lt(maxCopy, copyLen) { copyLen := maxCopy }
                 // SIGDATACOPY halts on non-ARBITRARY entries: copy only scheme 0.
-                if and(iszero(scheme), gt(sigLen, 0)) {
-                    verbatim_4i_0o(hex"b5", 0x180, 0, sigLen, sigIndex)
+                if and(iszero(scheme), gt(copyLen, 0)) {
+                    verbatim_4i_0o(hex"b5", 0x180, 0, copyLen, sigIndex)
                 }
-                return(0, add(0x180, sigLen))
+                return(0, add(0x180, copyLen))
             }
         }
     }

@@ -23,21 +23,18 @@ from jardin_primitives import hmac512  # noqa: E402
 
 SIG_STATELESS = 0x01
 SIG_COMPACT = 0x02
-DOMAIN = keccak256(b"PQ-Vault/v1")
+DOMAIN = keccak256(b"PQ-Vault/v2")
 FORS_SIG_BASE = _F.BASE_LEN  # 2593
 SPX_SIG_LEN = _S.SIG_LEN  # 6512
 
 
 def vault_message(sig_hash: bytes) -> bytes:
-    """What the second guardian (entry 1) signs: keccak256(abi.encode(DOMAIN, sigHash)) — PQVault.messageFor."""
+    """What every approving guardian signs: keccak256(abi.encode(DOMAIN, sigHash)) — PQVault.messageFor.
+
+    Every entry is verified in a VERIFY frame, so no entry needs to commit to another one: guardians
+    sign independently, in any order."""
     assert len(sig_hash) == 32
     return keccak256(DOMAIN + sig_hash)
-
-
-def first_message(sig_hash: bytes, entry_b: bytes) -> bytes:
-    """What the first guardian (entry 0) signs: it commits to entry 1's exact bytes — PQVault.firstMessageFor."""
-    assert len(sig_hash) == 32
-    return keccak256(DOMAIN + sig_hash + keccak256(entry_b))
 
 
 def _b32(x: int) -> bytes:

@@ -25,5 +25,5 @@ docker rm -f pqvault-sidecar >/dev/null 2>&1 || true
 docker run -d --name pqvault-sidecar --platform linux/amd64 --add-host host.docker.internal:host-gateway \
   -p 14337:14337 -v "$CFG":/usr/app/config.json:ro "$IMAGE" \
   standalone --redirectRpc --executor.bundlingMode auto --api.port 14337 >/dev/null
-docker image inspect "$IMAGE" --format 'sidecar image digest: {{index .RepoDigests 0}}'
+docker image inspect "$IMAGE" --format 'sidecar image: {{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}} (locally built){{end}}'
 echo "sidecar: http://127.0.0.1:14337/rpc"

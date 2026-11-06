@@ -45,9 +45,9 @@ class Jardin(unittest.TestCase):
         self.assertTrue(spx.verify(m, sig))
 
     def test_vault_message_matches_solidity_definition(self):
-        # keccak256(abi.encode(keccak256("PQ-Vault/v1"), sigHash))
+        # PQVault.messageFor: keccak256(abi.encode(keccak256("PQ-Vault/v2"), sigHash))
         sh = bytes(range(32))
-        self.assertEqual(vault_message(sh), keccak256(keccak256(b"PQ-Vault/v1") + sh))
+        self.assertEqual(vault_message(sh), keccak256(keccak256(b"PQ-Vault/v2") + sh))
 
 
 class Stores(unittest.TestCase):

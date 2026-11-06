@@ -43,7 +43,9 @@ def status():
     if vault:
         out["vault"] = {"address": vault,
                         "balanceWei": str(int(rpc.eth("eth_getBalance", [vault, "latest"]), 16)),
-                        "nonce": int(rpc.eth("eth_getTransactionCount", [vault, "latest"]), 16)}
+                        "nonce": int(rpc.eth("eth_getTransactionCount", [vault, "latest"]), 16),
+                        "threshold": dep.get("thresholds", {}).get("vault", 2),
+                        "guardians": len(net.load("guardians.json", []))}
     if net.load("guardians.json"):
         for g in cached_guardians():
             slot = g.slot()
@@ -73,15 +75,17 @@ def demo_stale_restore(g_idx: int):
         raise RuntimeError("send at least one transaction with this guardian first")
     stale_path = net.path(f"guardian-{g_idx}-leaves.stale-backup.json")
     dv_state = DurableLeafStore(stale_path)  # a freshly 'restored' backup: next_q = 1
-    other = gs[(g_idx + 1) % 3]
     vault = net.deployment["vault"]
-    # (b) baseline signer on the restored backup
-    tx = dv.build_vault_tx(net, vault, [(net.deployer(), 1, "0x")])
+    t = net.deployment.get("thresholds", {}).get("vault", 2)
+    approvers = sorted([g_idx] + [x for x in range(len(gs)) if x != g_idx][:t - 1])
+    # (b) baseline signer on the restored backup, together with t-1 honest approvals
+    tx = dv.build_vault_tx(net, vault, [(net.deployer(), 1, "0x")], ["compact"] * t)
     sh = tx.sig_hash()
-    e1 = other.sign_compact(dv.vault_message(sh))
+    m = dv.vault_message(sh)
     q_stale = dv_state.reserve(slot.slot_id, slot.q_max)
-    tx.signatures[1].signature = e1
-    tx.signatures[0].signature = dv.compact_entry(g_idx, slot, slot.sign(dv.first_message(sh, e1), q_stale))
+    for i, a in enumerate(approvers):
+        tx.signatures[i].signature = (dv.compact_entry(g_idx, slot, slot.sign(m, q_stale)) if a == g_idx
+                                      else gs[a].sign_compact(m))
     sim = dv.simulate(tx)
     # (a) PQ-Vault signer on the same restored backup
     anchored_q = max(1, hwm + 1)
@@ -127,8 +131,9 @@ class H(BaseHTTPRequestHandler):
             return self._send(409, {"error": "another guardian operation is running"})
         try:
             if self.path == "/api/transfer":
-                pair = tuple(int(x) for x in body.get("pair", [0, 1]))
-                out = dv.cmd_transfer(NET, body["to"], int(body["wei"]), pair, body.get("second", "compact"))
+                approvers = tuple(int(x) for x in body.get("approvers", body.get("pair", [0, 1])))
+                stateless = tuple(int(x) for x in body.get("stateless", []))
+                out = dv.cmd_transfer(NET, body["to"], int(body["wei"]), approvers, stateless)
             elif self.path == "/api/rotate":
                 out = dv.cmd_rotate(NET, int(body["guardian"]))
             elif self.path == "/api/recover":

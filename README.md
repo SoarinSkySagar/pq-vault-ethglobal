@@ -1,7 +1,8 @@
 # PQ-Vault
 
-**A 2-of-3 post-quantum guardian wallet for EIP-8141 frame transactions, plus research on keeping
-*stateful* hash-based signatures safe through crashes, stale backups, cloned devices and rollback.**
+**A t-of-n post-quantum guardian wallet for EIP-8141 frame transactions (n guardians and threshold t fixed at
+creation), plus research on keeping *stateful* hash-based signatures safe through crashes, stale backups, cloned
+devices and rollback.**
 
 Built for ETHGlobal Mumbai 2026. Devnet only — research prototype, not audited, never use real funds.
 
@@ -20,12 +21,13 @@ Built for ETHGlobal Mumbai 2026. Devnet only — research prototype, not audited
 
 | Feature | How |
 |---|---|
-| Guardian authorization (2-of-3) | Frame 0 `VERIFY` → `validate()` checks guardian A's compact JARDIN signature (fits the 100k validation budget), binds approval to the exact frame list, caps the fee. Frame 1 `SENDER` → `execute()` checks guardian B (compact *or* stateless SPX), then runs the batch atomically. |
+| Guardian authorization (t-of-n) | Three frames, the ERC-8421 `[only_verify, pay]` prefix plus one body frame. Frame 0 `VERIFY` (scope execution) and frame 1 `VERIFY` (scope payment) each run `validate()` over their share `[0,k)` / `[k,t)` of the t approvals (compact FORS *or* stateless SPX), pin the frame list and cap the fee. Frame 2 `SENDER` → `execute()` consumes every approval's leaf and runs the batch atomically. Every signature is verified before payment is approved: a missing, corrupted, stale or duplicate approval makes the transaction invalid and costs the vault nothing. All guardians sign the same message, independently and in any order. |
 | Replay protection | Protocol nonce + `TXPARAM(0x08)` (chain id, sender, nonce, fees, all frames) + domain tag; distinct guardians; and per-leaf replay protection through the **LeafLedger** (a stateful leaf can never be accepted twice). |
-| Key rotation | `registerSlot` / `revokeSlot`: a guardian gets a fresh compact slot (new randomness), approved 2-of-3. |
-| Key-loss recovery | `replaceGuardian`: the two remaining guardians install new master + slot keys; bumping the guardian epoch revokes every old slot. |
+| Key rotation | `registerSlot` / `revokeSlot`: a guardian gets a fresh compact slot (new randomness), approved t-of-n. |
+| Key-loss recovery | `replaceGuardian`: t remaining guardians install new master + slot keys; bumping the guardian epoch revokes every old slot. |
 | Stateful-signature safety (research result) | LeafLedger high-water marks enforced in `VERIFY`, chain-anchored signer, in-flight window, and permissionless **equivocation reports** that revoke a slot that signed two messages with one leaf. |
 | ERC-8421 alt mempool | `VERIFY` reads the shared LeafLedger — storage not associated with the sender, which the EIP-8141 canonical mempool refuses and the alt mempool admits for a **staked** sender; the vault stakes itself in its constructor. |
+| Validation budget (100k cap) | t PQ approvals need ~86k (first compact approval in a frame) + ~68k per further compact approval, so t ≥ 2 exceeds EIP-8141's combined `MAX_VERIFY_GAS` (100k). ERC-8421 `[BUDGET-010]` gives each **staked** entity its own 1,000,000 budget; every validation frame here belongs to the staked vault. The deployed workshop sidecar does not implement `[BUDGET-010]`; `infra/sidecar-budget010/` adds it (patch + 7 tests + image build). |
 
 ## Layout
 
@@ -34,14 +36,16 @@ contracts/          Foundry project: PQVault, PQVaultFactory, LeafLedger, PQVaul
 pqv/                Python toolkit: frame-tx codec, JARDIN key wrapper, leaf-state stores, devnet driver, UI server
 app/                Single-page UI (no external scripts or trackers)
 research/           Simulator, crash experiment, results/, REPORT.md
-infra/              Local EIP-8141 devnet (Kurtosis; ethrex eip8141-tracer + Lighthouse)
+infra/              Local EIP-8141 devnet (Kurtosis; ethrex eip8141-tracer + Lighthouse); sidecar-budget010/ (ERC-8421 per-entity budgets)
 third_party/        JARDIN and SPHINCS- (git submodules, pinned)
 ```
 
 ## Quick start
 
 Requirements: Foundry, Python ≥ 3.10 linked against OpenSSL ≥ 3.2 (for native `KECCAK-256`; e.g. Homebrew
-`python3.12`), `git submodule update --init`. No pip packages are needed.
+`python3.12`, or a uv-managed CPython on Linux), `git submodule update --init`. No pip packages are needed.
+Vault transactions with t ≥ 2 PQ approvals need an ERC-8421 mempool with per-entity budgets ([BUDGET-010]):
+`infra/sidecar-budget010/build.sh` builds one from the workshop sidecar.
 
 ```sh
 # contracts + tests
@@ -54,9 +58,10 @@ python3.12 research/crash_test.py --kills 150         # -> research/results/cras
 
 # devnet: `public` (chain-1337 hackathon devnet) or `local` (Kurtosis: ethrex eip8141-tracer + Lighthouse + sidecar)
 python3.12 -m pqv.devnet local deploy-infra
-python3.12 -m pqv.devnet local new-guardians
-python3.12 -m pqv.devnet local deploy-vault --fund 2 --stake 0.02
-python3.12 -m pqv.devnet local transfer 0x<to> 1000000000000000 --guardians 0,1
+infra/sidecar-budget010/build.sh && SIDECAR_IMAGE=pqvault/mempool-sidecar:budget-010 infra/sidecar-local.sh <ethrex-port> <staking>
+python3.12 -m pqv.devnet local new-guardians --n 4
+python3.12 -m pqv.devnet local deploy-vault --threshold 2 --fund 2 --stake 0.02      # t-of-n, staked
+python3.12 -m pqv.devnet local transfer 0x<to> 1000000000000000 --guardians 0,1 [--stateless 1]
 python3.12 -m pqv.server local       # UI on http://127.0.0.1:8141
 ```
 
@@ -65,7 +70,13 @@ Full local-devnet bring-up (including the native arm64 ethrex build for Apple Si
 
 ## Results at a glance
 
-- **PQ-signed EIP-8141 frame transactions on the public chain-1337 hackathon devnet**, admitted by the workshop's
+- **Three-frame t-of-n vault (current design), local devnet** (ethrex `9aa3645d`): 2-of-4, 3-of-4 and
+  compact+stateless transfers, key rotation, recovery and the live attack, all included through a sidecar with
+  ERC-8421 [BUDGET-010]. The stock sidecar and ethrex's canonical mempool reject the same transactions
+  (combined 100k cap), and the [BUDGET-010] sidecar rejects an *unstaked* copy. VERIFY frames: 84,596 / 78,720 gas
+  (one compact approval each). Billed gas of a 2-of-n transfer: 379,769 (two-frame design: 378,782).
+  Receipts: [docs/RECEIPTS-three-frame.md](docs/RECEIPTS-three-frame.md); write-up: REPORT §8.1.
+- **Earlier two-frame 2-of-3 design — PQ-signed EIP-8141 frame transactions on the public chain-1337 hackathon devnet**, admitted by the workshop's
   ERC-8421 gateway: 2-of-3 transfers (compact+compact, compact+stateless), key rotation, key-loss recovery, a
   transfer by the recovered guardian, a UI-initiated transfer, plus the live attack below — e.g. the first one,
   [`0x1a38358a…9cc1`](https://explorer.altmempool.wtf/tx/0x1a38358af26665a862b8a1b27eb9817565f08119d1aea3678d9c5bddaf6c9cc1)

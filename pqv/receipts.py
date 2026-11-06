@@ -1,6 +1,6 @@
 """Write docs/RECEIPTS.md from recorded devnet data (.devnet/<network>/{deployment,receipts}.json).
 
-    python -m pqv.receipts <network> [<network> ...]
+    python -m pqv.receipts <network> [<network> ...] [--out docs/RECEIPTS.md]
 
 Every line is copied from what the node returned; receipts are re-fetched from the chain so the file
 cannot drift from it.
@@ -26,12 +26,12 @@ def section(name: str) -> str:
              f"- RPC: {net.cfg['ethrex']} · mempool (ERC-8421 sidecar): {net.cfg['sidecar']}",
              f"- generated: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}", "",
              "### Contracts", "", "| contract | address | deploy tx |", "|---|---|---|"]
-    for k in ("frameOps", "forsVerifier", "spxVerifier", "staking", "factory", "ledger", "vault", "baselineVault",
-              "unstakedVault"):
+    for k in ("frameOps", "forsVerifier", "spxVerifier", "staking", "factory", "ledger", "vault", "vault34",
+              "baselineVault", "unstakedVault"):
         if dep.get(k):
             lines.append(f"| {k} | `{dep[k]}` | `{dep.get('txs', {}).get(k, '-')}` |")
     lines += ["", "### PQ-signed frame transactions", "",
-              "| # | action | tx hash | block | status | gas used | frames (VERIFY, SENDER) |", "|---|---|---|---|---|---|---|"]
+              "| # | action | tx hash | block | status | gas used | frames (status/gas, in order) |", "|---|---|---|---|---|---|---|"]
     for i, r in enumerate(recs, 1):
         rc = rpc.eth("eth_getTransactionReceipt", [r["txHash"]]) or {}
         frames = rc.get("frameReceipts") or []
@@ -47,6 +47,26 @@ def section(name: str) -> str:
                   f"| staked PQ-Vault → ethrex canonical mempool (`eth_sendRawTransaction`) | {cmp_['canonical_mempool']['admitted']} | `{json.dumps(cmp_['canonical_mempool'].get('error', cmp_['canonical_mempool'].get('result')))}` |",
                   f"| unstaked vault → ERC-8421 alt mempool | {cmp_['unstaked_alt_mempool']['admitted']} | `{json.dumps(cmp_['unstaked_alt_mempool'].get('error', cmp_['unstaked_alt_mempool'].get('txHash')))}` |",
                   "| staked PQ-Vault → ERC-8421 alt mempool | True | transactions 1-5 above |"]
+    adm = net.load("mempool-admission.json")
+    if adm:
+        lines += ["", "### Mempool admission of three-frame t-of-n transactions (`research/mempool_admission.py`)", "",
+                  "Each row is one signed transaction submitted to ethrex's canonical EIP-8141 mempool and to the ERC-8421 "
+                  "sidecar configured at that time (stock image = combined 100k MAX_VERIFY_GAS; `budget-010` image = "
+                  "per-entity [BUDGET-010]). Frame gas is from `ethrex_simulateFrameTransaction`.", "",
+                  "| tag | vault | approvals | declared VERIFY limits | simulated frame gas (V0, V1, SENDER) | canonical mempool | alt mempool | included |",
+                  "|---|---|---|---|---|---|---|---|"]
+        for a in adm:
+            fr = [int(f["gasUsed"], 16) for f in (a["simulation"].get("frames") or [])]
+            alt = a["altMempool"]
+            alt_s = f"admitted `{alt['txHash']}`" if alt.get("admitted") else f"rejected: `{alt.get('error', {}).get('message', alt.get('error'))}`"
+            can = a["canonicalMempool"]
+            can_s = "admitted" if can.get("admitted") else f"rejected: `{(can.get('error') or {}).get('message', can.get('error'))}`"
+            rc = a.get("receipt")
+            inc = f"block {rc['block']}, {rc['status']}, gas {rc['gasUsed']}" if rc else "-"
+            appr = ", ".join(f"g{g}:{k}" for g, k in zip(a["guardians"], a["kinds"]))
+            note = f" ({a['note']})" if a.get("note") else ""
+            lines.append(f"| {a['tag']}{note} | {a['vaultLabel']} ({a['threshold']}-of-n) | {appr} | {a['declaredVerifyLimits']} "
+                         f"| {fr} | {can_s} | {alt_s} | {inc} |")
     att = net.load("attack-stale-restore.json")
     if att:
         lines += ["", "### Live attack: outdated-backup restoration (controlled test wallets)", "",
@@ -58,14 +78,21 @@ def section(name: str) -> str:
 
 
 def main():
-    nets = sys.argv[1:] or ["local"]
+    args = sys.argv[1:]
+    out_path = os.path.join(ROOT, "docs", "RECEIPTS.md")
+    if "--out" in args:
+        i = args.index("--out")
+        out_path = os.path.abspath(args[i + 1])
+        args = args[:i] + args[i + 2:]
+    nets = args or ["local"]
     out = ["# Devnet receipts", "",
            "Real EIP-8141 frame transactions authorised by JARDIN hash-based signatures (no ECDSA), "
            "submitted through the ERC-8421 alt-mempool sidecar. Regenerate with `python -m pqv.receipts "
-           + " ".join(nets) + "`.", ""]
+           + " ".join(nets) + (f" --out {os.path.relpath(out_path, ROOT)}" if out_path != os.path.join(ROOT, "docs", "RECEIPTS.md") else "")
+           + "`.", ""]
     for n in nets:
         out.append(section(n))
-    p = os.path.join(ROOT, "docs", "RECEIPTS.md")
+    p = out_path
     os.makedirs(os.path.dirname(p), exist_ok=True)
     open(p, "w").write("\n".join(out))
     print("wrote", p)
