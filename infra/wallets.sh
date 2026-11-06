@@ -2,8 +2,13 @@
 # Start / stop several PQ-Vault personal wallets for a demo (one browser tab each).
 #
 #   infra/wallets.sh start alice bob carol     # -> http://127.0.0.1:8201, :8202, :8203
+#   infra/wallets.sh start --lan alice bob     # also serve the mobile app to phones: https://<lan-ip>:9201, :9202
+#   infra/wallets.sh pair alice                # phone link, pairing code and a QR code in the terminal
 #   infra/wallets.sh status
 #   infra/wallets.sh stop
+#
+# The wallet page is an installable mobile app (PWA). Phones are only screens: keys and signing stay in the wallet
+# process on this computer. See pqv/lan.py for the HTTPS certificate and the pairing code.
 #
 # Needs a running network with PQ-Vault contracts (infra/local-net.sh up). Each wallet keeps its keys and
 # account under .devnet/local/wallets/<name>/; open its page and press "Create wallet" the first time.
@@ -24,7 +29,9 @@ pick_python() {
 }
 
 cmd_start() {
-  [ $# -gt 0 ] || { echo "usage: $0 start <name> [<name> ...]" >&2; exit 2; }
+  local lan=()
+  if [ "${1:-}" = "--lan" ]; then lan=(--lan); shift; fi
+  [ $# -gt 0 ] || { echo "usage: $0 start [--lan] <name> [<name> ...]" >&2; exit 2; }
   local py port=$BASE_PORT name
   py="$(pick_python)"
   mkdir -p "$RUN"
@@ -33,16 +40,38 @@ cmd_start() {
       echo "$name: already running on http://127.0.0.1:$(cat "$RUN/$name/server.port")"
     else
       mkdir -p "$RUN/$name"
-      nohup "$py" -m pqv.wallet "$name" --port "$port" > "$RUN/$name/server.log" 2>&1 &
+      nohup "$py" -m pqv.wallet "$name" --port "$port" ${lan[@]+"${lan[@]}"} > "$RUN/$name/server.log" 2>&1 &
       echo $! > "$RUN/$name/server.pid"; echo "$port" > "$RUN/$name/server.port"
       until curl -sf "http://127.0.0.1:$port/api/state" >/dev/null 2>&1; do
         kill -0 "$(cat "$RUN/$name/server.pid")" 2>/dev/null || { echo "$name: failed, see $RUN/$name/server.log" >&2; exit 1; }
         sleep 1
       done
-      echo "$name: http://127.0.0.1:$port"
+      echo "$name: http://127.0.0.1:$port$(lan_url "$name")"
     fi
     port=$((port + 1))
   done
+}
+
+lan_url() {  # ", phones: https://…" if the wallet serves phones
+  local f="$RUN/$1/lan.json"
+  [ -f "$f" ] && sed -n 's/.*"url": *"\([^"]*\)".*/, phones: \1/p' "$f"
+  return 0
+}
+
+cmd_pair() {
+  local name="${1:-}" port
+  [ -n "$name" ] && [ -f "$RUN/$name/server.port" ] || { echo "usage: $0 pair <running wallet name>" >&2; exit 2; }
+  port="$(cat "$RUN/$name/server.port")"
+  [ -f "$RUN/$name/lan.json" ] || { echo "$name does not serve phones; restart it with: $0 start --lan $name" >&2; exit 1; }
+  local link
+  link="$(curl -sf "http://127.0.0.1:$port/api/pair" | sed -n 's/.*"link": *"\([^"]*\)".*/\1/p')"
+  [ -n "$link" ] || { echo "$name: could not read the pairing link (is it running?)" >&2; exit 1; }
+  echo "$name on a phone (same Wi-Fi):"
+  echo "  1. once per phone, install the devnet CA: ${link%%/#*}/ca.crt  (file: .devnet/tls/ca.crt)"
+  echo "  2. open: $link"
+  echo "  pairing code: $(cat "$RUN/$name/pair-code")"
+  command -v qrencode >/dev/null && qrencode -t ansiutf8 -m 2 "$link"
+  echo "Android over USB instead (no certificate, no code): adb reverse tcp:$port tcp:$port, then open http://localhost:$port"
 }
 
 cmd_status() {
@@ -50,7 +79,7 @@ cmd_status() {
   for d in "$RUN"/*/; do
     [ -f "$d/server.pid" ] || continue
     name="$(basename "$d")"
-    if kill -0 "$(cat "$d/server.pid")" 2>/dev/null; then echo "$name: http://127.0.0.1:$(cat "$d/server.port")"
+    if kill -0 "$(cat "$d/server.pid")" 2>/dev/null; then echo "$name: http://127.0.0.1:$(cat "$d/server.port")$(lan_url "$name")"
     else echo "$name: stopped"; fi
   done
 }
@@ -67,7 +96,8 @@ cmd_stop() {
 
 case "${1:-}" in
   start)  shift; cmd_start "$@" ;;
+  pair)   shift; cmd_pair "$@" ;;
   status) cmd_status ;;
   stop)   cmd_stop ;;
-  *) echo "usage: $0 start <name>... | status | stop" >&2; exit 2 ;;
+  *) echo "usage: $0 start [--lan] <name>... | pair <name> | status | stop" >&2; exit 2 ;;
 esac
