@@ -43,10 +43,7 @@ def status():
     if vault:
         out["vault"] = {"address": vault,
                         "balanceWei": str(int(rpc.eth("eth_getBalance", [vault, "latest"]), 16)),
-                        "nonce": int(rpc.eth("eth_getTransactionCount", [vault, "latest"]), 16),
-                        "threshold": dep.get("thresholds", {}).get("vault", 2),
-                        "guardians": len(net.load("guardians.json", [])),
-                        "frames": dv.net_frames(net)}
+                        "nonce": int(rpc.eth("eth_getTransactionCount", [vault, "latest"]), 16)}
     if net.load("guardians.json"):
         for g in cached_guardians():
             slot = g.slot()
@@ -77,14 +74,9 @@ def demo_stale_restore(g_idx: int):
     stale_path = net.path(f"guardian-{g_idx}-leaves.stale-backup.json")
     dv_state = DurableLeafStore(stale_path)  # a freshly 'restored' backup: next_q = 1
     vault = net.deployment["vault"]
-    t = net.deployment.get("thresholds", {}).get("vault", 2)
-    frames = dv.net_frames(net)
-    others = [x for x in range(len(gs)) if x != g_idx][:t - 1]
-    # entry order: three frames = increasing guardian index; two frames = the restored signer commits (entry 0),
-    # so its stale leaf is checked in the VERIFY frame in both shapes
-    approvers = [g_idx] + others if frames == 2 else sorted([g_idx] + others)
-    # (b) baseline signer on the restored backup, together with t-1 honest approvals
-    tx = dv.build_vault_tx(net, vault, [(net.deployer(), 1, "0x")], ["compact"] * t, frames=frames)
+    # (b) baseline signer on the restored backup, together with one honest approval (entries in guardian order)
+    approvers = sorted([g_idx, (g_idx + 1) % 3])
+    tx = dv.build_vault_tx(net, vault, [(net.deployer(), 1, "0x")], ["compact", "compact"])
     q_stale = dv_state.reserve(slot.slot_id, slot.q_max)
     dv.sign_entries(tx, [(lambda m: dv.compact_entry(g_idx, slot, slot.sign(m, q_stale))) if a == g_idx
                          else dv.entry_signer(gs[a], "compact") for a in approvers])
@@ -135,8 +127,7 @@ class H(BaseHTTPRequestHandler):
             if self.path == "/api/transfer":
                 approvers = tuple(int(x) for x in body.get("approvers", body.get("pair", [0, 1])))
                 stateless = tuple(int(x) for x in body.get("stateless", []))
-                out = dv.cmd_transfer(NET, body["to"], int(body["wei"]), approvers, stateless,
-                                      frames=body.get("frames"), committer=body.get("committer"))
+                out = dv.cmd_transfer(NET, body["to"], int(body["wei"]), approvers, stateless)
             elif self.path == "/api/rotate":
                 out = dv.cmd_rotate(NET, int(body["guardian"]))
             elif self.path == "/api/recover":

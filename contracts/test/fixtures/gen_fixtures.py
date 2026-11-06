@@ -10,11 +10,10 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
 from pqv.hashing import keccak256  # noqa: E402
-from pqv.jardin import (CompactSlot, SpxMaster, compact_entry, first_message, stateless_entry,  # noqa: E402
-                        vault_message)
+from pqv.jardin import CompactSlot, SpxMaster, compact_entry, stateless_entry, vault_message  # noqa: E402
 
 H = 7
-N = 4  # guardians 0..2 form the 2-of-3 test vault; 0..3 the 3-of-4 one
+N = 3
 OUT = os.path.join(os.path.dirname(__file__), "vault_fixtures.json")
 
 
@@ -69,25 +68,6 @@ def main():
     scen["recovery"] = tx(TX[7], c(0, slots[0], 5), c(1, slots[1], 5))
     scen["oldSlotAfterRecovery"] = tx(TX[8], c(0, slots[0], 6), c(2, slots[2], 1))
     scen["newSlotAfterRecovery"] = tx(TX[9], c(0, slots[0], 7), c(2, new_slot, 1))
-    # 3-of-4 vault: guardians 0, 2, 3.
-    scen["threeOfFour"] = tx(TX[10], c(0, slots[0], 1), c(2, slots[2], 1), c(3, slots[3], 1))
-    # Two-frame fallback: entries 1..t-1 sign vault_message(h); entry 0 signs last, over first_message(h, rest).
-    def tf(h, first, *rest, rest_hash_of=None):
-        m = vault_message(h)
-        r = [s(m) for s in rest]
-        return h, [first(first_message(h, rest_hash_of or r))] + r
-
-    TF = [label(f"pq-vault-test/two-frame-tx{i}") for i in range(8)]
-    scen["tfHappy"] = tf(TF[1], c(0, slots[0], 1), c(1, slots[1], 1))
-    scen["tfStateless"] = tf(TF[2], c(1, slots[1], 2), st(2, spx[2]))  # entry 0 = guardian 1: any guardian may commit
-    scen["tfBadSecond"] = (TF[3], None)  # filled below: entry 1 signs another tx
-    m_other = vault_message(TF[1])
-    e1_bad = st(2, spx[2])(m_other)
-    scen["tfBadSecond"] = (TF[3], [c(0, slots[0], 3)(first_message(TF[3], [e1_bad])), e1_bad])
-    scen["tfSameGuardian"] = tf(TF[4], c(0, slots[0], 4), c(0, slots[0], 5))
-    scen["tfStatelessFirst"] = tf(TF[5], st(0, spx[0]), c(1, slots[1], 3))  # stateless entry 0 is refused
-    # 3-of-4: guardian 3 commits (entry 0), guardians 0 and 2 follow in increasing order.
-    scen["tfThreeOfFour"] = tf(TF[6], c(3, slots[3], 1), c(0, slots[0], 1), c(2, slots[2], 1))
     for k, (h, entries) in scen.items():
         fx[f"{k}_sigHash"] = "0x" + h.hex()
         fx[f"{k}_n"] = len(entries)

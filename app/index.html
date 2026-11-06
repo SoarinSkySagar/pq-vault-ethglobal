@@ -52,17 +52,17 @@
   </section>
 
   <section>
-    <h2>Send (needs <span id="tNeeded">t</span> guardians)</h2>
+    <h2>Send (needs 2 of 3 guardians)</h2>
     <label>Recipient</label><input id="to" placeholder="0x…">
     <label>Amount (ETH, devnet)</label><input id="amt" value="0.001">
     <div class="row">
-      <div style="flex:1"><label>Approving guardians (exactly t, e.g. 0,1)</label>
-        <input id="approvers" value="0,1"></div>
-      <div style="flex:1"><label>Of those, sign stateless (JARDIN SPX, 6.5 KB; others compact FORS, 2.7 KB)</label>
-        <input id="stateless" value="" placeholder="e.g. 1"></div>
+      <div style="flex:1"><label>Approving guardians</label>
+        <select id="approvers"><option value="0,1">0 + 1</option><option value="0,2">0 + 2</option><option value="1,2">1 + 2</option></select></div>
+      <div style="flex:1"><label>Second guardian signs</label>
+        <select id="second"><option value="compact">compact (stateful JARDIN FORS, 2.7 KB)</option><option value="stateless">stateless (JARDIN SPX, 6.5 KB)</option></select></div>
     </div>
-    <div class="muted" id="shapeNote">Frames: VERIFY (execution) + VERIFY (payment) check every approval, then one SENDER frame consumes all leaves and executes.</div>
-    <button class="primary" id="send">Sign with t guardians &amp; send via alt mempool</button>
+    <div class="muted">Frames: VERIFY (guardian A, execution) + VERIFY (guardian B, payment), then one SENDER frame consumes both leaves and executes.</div>
+    <button class="primary" id="send">Sign with 2 guardians &amp; send via alt mempool</button>
     <div id="sendOut" class="muted" style="margin-top:8px"></div>
   </section>
 
@@ -109,15 +109,10 @@ async function refresh() {
     <div>address</div><div class="mono">${v.address || "not deployed"}</div>
     <div>balance</div><div>${v.balanceWei ? (Number(v.balanceWei) / 1e18).toFixed(6) + " ETH" : "-"}</div>
     <div>nonce</div><div>${v.nonce ?? "-"}</div>
-    <div>policy</div><div>${v.threshold ? `${v.threshold}-of-${v.guardians}, ${v.frames}-frame transactions` : "-"}</div>
     <div>LeafLedger</div><div class="mono">${d.ledger || "-"}</div>
     <div>JARDIN FORS / SPX</div><div class="mono">${short(d.forsVerifier)} / ${short(d.spxVerifier)}</div>
     <div>staking registry</div><div class="mono">${d.staking || "-"}</div>
     <div>tx submitted to</div><div class="mono">${S.mempool}</div>`;
-  $("tNeeded").textContent = v.threshold || "t";
-  $("shapeNote").textContent = v.frames === 2
-    ? "Frames (fallback for mempools with the combined 100k cap): VERIFY checks the first compact approval, which commits to the others; SENDER checks the rest, consumes leaves and executes."
-    : "Frames: VERIFY (execution) + VERIFY (payment) check every approval, then one SENDER frame consumes all leaves and executes.";
   $("guardians").innerHTML = S.guardians.map(g => {
     const used = g.ledgerHighWaterMark === "revoked" ? g.qMax : g.ledgerHighWaterMark;
     return `<div class="g">
@@ -152,11 +147,12 @@ async function act(path, body) {
 
 $("send").onclick = async () => {
   const wei = BigInt(Math.round(parseFloat($("amt").value) * 1e9)) * 1000000000n;
-  const list = (id) => $(id).value.split(",").map(x => x.trim()).filter(x => x !== "").map(Number);
-  $("sendOut").textContent = "signing with guardians " + list("approvers").join(", ") + ", simulating, submitting…";
+  const pair = $("approvers").value.split(",").map(Number);
+  const stateless = $("second").value === "stateless" ? [pair[1]] : [];
+  $("sendOut").textContent = "signing with guardians " + pair.join(" + ") + ", simulating, submitting…";
   $("send").disabled = true;
   try {
-    const r = await api("/api/transfer", { to: $("to").value.trim(), wei: wei.toString(), approvers: list("approvers"), stateless: list("stateless") });
+    const r = await api("/api/transfer", { to: $("to").value.trim(), wei: wei.toString(), approvers: pair, stateless });
     $("sendOut").innerHTML = `included in block ${parseInt(r.receipt.blockNumber, 16)} — ${txLink(r.txHash)} — status <span class="${r.receipt.status === "0x1" ? "ok" : "bad"}">${r.receipt.status}</span>`;
   } catch (e) { $("sendOut").innerHTML = `<span class="bad">${e.message}</span>`; }
   $("send").disabled = false;

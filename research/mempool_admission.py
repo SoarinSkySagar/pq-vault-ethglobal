@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record how mempools treat a t-of-n PQ-Vault three-frame transaction (evidence for REPORT §8.1).
+"""Record how mempools treat a 2-of-3 PQ-Vault three-frame transaction (evidence for REPORT §8.1).
 
     python -m research.mempool_admission <network> <tag> [--vault vault] [--guardians 0,1] [--stateless ""]
 
@@ -24,23 +24,19 @@ def main(argv=None):
     ap.add_argument("--vault", default="vault")
     ap.add_argument("--guardians", default="0,1")
     ap.add_argument("--stateless", default="")
-    ap.add_argument("--frames", type=int, choices=[2, 3], default=None)
     a = ap.parse_args(argv)
     net = dv.Net(a.network)
     gs = dv.guardians(net)
     approvers = tuple(int(x) for x in a.guardians.split(","))
     stateless = tuple(int(x) for x in a.stateless.split(",") if x)
-    frames = a.frames or dv.net_frames(net)
-    signers, kinds, idx = dv.approver_plan(gs, approvers, stateless, frames)
+    signers, kinds, idx = dv.approver_plan(gs, approvers, stateless)
     vault = net.deployment[a.vault]
-    tx = dv.build_vault_tx(net, vault, [(net.deployer(), 1, "0x")], kinds, frames=frames)
+    tx = dv.build_vault_tx(net, vault, [(net.deployer(), 1, "0x")], kinds)
     sh = dv.sign_vault_tx(tx, signers, kinds)
     sim = dv.simulate(tx)
     rec = {"tag": a.tag, "time": int(time.time()), "vault": vault, "vaultLabel": a.vault,
-           "threshold": net.deployment.get("thresholds", {}).get(a.vault), "guardians": idx, "kinds": kinds,
-           "sigHash": dv.h(sh), "frames": frames,
-           "declaredVerifyLimits": [f.execution for f in tx.frames if f.mode == 1],
-           "split": tx.frames[0].data[5] if frames == 3 else None, "sidecar": net.cfg["sidecar"],
+           "guardians": idx, "kinds": kinds, "sigHash": dv.h(sh),
+           "declaredVerifyLimits": [f.execution for f in tx.frames if f.mode == 1], "sidecar": net.cfg["sidecar"],
            "simulation": {k: sim.get(k) for k in ("valid", "prefixShape", "canonicalMempoolViolation",
                                                   "executionStatus", "gasUsed", "frames", "executionError")}}
     try:
@@ -61,7 +57,7 @@ def main(argv=None):
                 rec["receipt"] = {"status": rc["status"], "block": int(rc["blockNumber"], 16),
                                   "gasUsed": int(rc["gasUsed"], 16),
                                   "frames": [(f.get("status"), int(f.get("gasUsed", "0x0"), 16)) for f in rc.get("frameReceipts", [])]}
-                dv.record_receipt(net, f"{a.tag}: transfer {rec['threshold']}-of-{len(gs)} {dv._plus(idx, stateless)}",
+                dv.record_receipt(net, f"{a.tag}: transfer {dv._plus(idx, stateless)}",
                                   {"txHash": rec["altMempool"]["txHash"], "receipt": rc, "submittedVia": net.cfg["sidecar"]},
                                   {"sigHash": rec["sigHash"], "guardians": idx, "kinds": kinds, "vault": vault})
                 break

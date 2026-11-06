@@ -23,61 +23,41 @@ interface IStakingRegistry {
     function withdrawStake(address payable withdrawAddress) external;
 }
 
-/// @title PQVault — t-of-n post-quantum guardian wallet for EIP-8141 frame transactions
+/// @title PQVault — 2-of-3 post-quantum guardian wallet for EIP-8141 frame transactions
 /// @notice No ECDSA anywhere: every approval is a JARDIN hash-based signature (upstream verifiers,
 ///         unmodified) carried in an EIP-8141 `ARBITRARY` signature entry and checked against the
 ///         protocol's canonical signature hash `TXPARAM(0x08)`, which commits to chain id, sender,
 ///         nonce, fees and every frame (including the body frame's calldata).
 ///
-///         The number of guardians n and the threshold t (2 <= t <= n <= 16) are fixed at creation.
+///         Transaction shape (exactly) — the ERC-8421 `[only_verify, pay]` validation prefix + one body frame:
+///           signatures: 2 ARBITRARY entries, msg empty; entry 0's guardian < entry 1's guardian
+///           frame 0 VERIFY  scope EXECUTION -> validate()        verifies guardian A (entry 0)
+///           frame 1 VERIFY  scope PAYMENT   -> validate()        verifies guardian B (entry 1)
+///           frame 2 SENDER                  -> execute(calls)    consumes both leaves, runs the batch
 ///
-///         Two transaction shapes are accepted.
-///
-///         (A) Three frames, the ERC-8421 `[only_verify, pay]` validation prefix + one body frame:
-///           signatures: t ARBITRARY entries, msg empty, guardian indices strictly increasing
-///           frame 0 VERIFY  scope EXECUTION -> validate() data = selector ‖ 0 ‖ k   checks entries [0, k)
-///           frame 1 VERIFY  scope PAYMENT   -> validate() data = selector ‖ k ‖ t   checks entries [k, t)
-///           frame 2 SENDER                  -> execute(calls)                      consumes every leaf, runs the batch
-///         The submitter picks k (1 <= k < t) to balance validation gas between the two frames; the
-///         frame data is covered by the signature hash, so k is signed like everything else.
-///
-///         Every guardian signature is cryptographically verified inside a VERIFY frame, before
-///         payment is approved. A missing, corrupted, stale or duplicated approval makes the whole
-///         transaction invalid, so it costs the vault nothing. All guardians sign the same message
-///         (messageFor(sigHash)), independently and in any order.
+///         Both signatures are verified before payment is approved: a missing, corrupted, stale or
+///         duplicated approval makes the transaction invalid, so it costs the vault nothing. Both guardians
+///         sign the same message (messageFor(sigHash)), independently and in any order.
 ///
 ///         VERIFY frames are static: they only *check* each compact leaf against the shared LeafLedger
-///         (q must be above the slot's high-water mark). The SENDER frame *consumes* every leaf
-///         (LeafLedger.consume is an atomic check-and-update, so a leaf raced by another transaction
-///         after validation is caught there) and then runs the batch atomically.
-///
-///         (B) Two frames, the fallback for mempools that cap the whole validation prefix at EIP-8141's
-///             combined MAX_VERIFY_GAS (100k), such as the deployed workshop gateway (`[self_verify]` prefix):
-///           signatures: t ARBITRARY entries, msg empty
-///           frame 0 VERIFY  scope EXECUTION+PAYMENT -> validateAndCommit()  checks entry 0 only (compact)
-///           frame 1 SENDER                          -> execute(calls)       checks entries [1, t), consumes, runs
-///         Only one JARDIN verification fits 100k, so entries 1..t-1 are verified after payment is
-///         approved. To stop a relayer from corrupting them (their bytes are elided from the sig hash),
-///         entry 0's signer signs *last*, over firstMessageFor(sigHash, restHash) where restHash commits to
-///         the exact bytes of every other entry; entries 1..t-1 sign messageFor(sigHash), in guardian order.
-///         Residual cost of this shape: if an approval in [1, t) is invalid, nothing executes but the fee
-///         (<= MAX_TX_COST) is paid and entry 0's leaf is consumed (ApprovalRejected). Shape (A) has no such cost.
+///         (q must be above the slot's high-water mark). The SENDER frame *consumes* both leaves
+///         (LeafLedger.consume is an atomic check-and-update, so a leaf raced by another transaction after
+///         validation is caught there) and then runs the batch atomically.
 ///
 ///         Entry layout (ARBITRARY signature bytes):
 ///           compact   (0x02): guardian u8 ‖ 0x02 ‖ slotSeed 16 ‖ slotRoot 16 ‖ plain-FORS sig (2593+16h)
 ///           stateless (0x01): guardian u8 ‖ 0x01 ‖ SPX sig 6512   (against the guardian's master key)
 ///
-///         Validation gas: about 75-80k per compact approval. Two or more approvals exceed EIP-8141's
-///         combined MAX_VERIFY_GAS (100k); ERC-8421 [BUDGET-010] gives a *staked* entity its own
-///         MAX_VERIFY_GAS_STAKED_ENTITY (1,000,000) budget, and every validation frame here belongs to
-///         the vault (sender and payer), which stakes itself in its constructor.
+///         Validation gas: ~85k per VERIFY frame with a compact approval (~295k with a stateless one), so the
+///         prefix (~170k) exceeds EIP-8141's combined MAX_VERIFY_GAS (100k). ERC-8421 [BUDGET-010] gives a
+///         *staked* entity its own MAX_VERIFY_GAS_STAKED_ENTITY (1,000,000) budget; both VERIFY frames belong
+///         to the vault (sender and payer), which stakes itself in its constructor.
 contract PQVault {
     // ---------------------------------------------------------------- constants & config
     uint256 private constant MODE_VERIFY = 1;
     uint256 private constant MODE_SENDER = 2;
     uint256 private constant SCOPE_PAYMENT = 1;
     uint256 private constant SCOPE_EXECUTION = 2;
-    uint256 private constant SCOPE_EXECUTION_AND_PAYMENT = 3;
     uint256 private constant SCHEME_ARBITRARY = 0;
     uint256 private constant FORS_BASE_LEN = 2593; // JardinForsPlainVerifier: 2593 + 16h, h in [2,8]
     uint256 private constant SPX_LEN = 6512;
@@ -87,7 +67,8 @@ contract PQVault {
 
     uint8 public constant SIG_STATELESS = 0x01;
     uint8 public constant SIG_COMPACT = 0x02;
-    uint256 public constant MAX_GUARDIANS = 16;
+    uint256 public constant N_GUARDIANS = 3;
+    uint256 public constant THRESHOLD = 2;
     bytes32 public constant DOMAIN = keccak256("PQ-Vault/v2");
 
     struct Deps {
@@ -104,10 +85,9 @@ contract PQVault {
     }
 
     struct Init {
-        Guardian[] guardians; // n master keys
-        bytes16[] slotSeeds; // initial compact slot per guardian
-        bytes16[] slotRoots;
-        uint8 threshold; // t
+        Guardian[3] guardians;
+        bytes16[3] slotSeeds; // initial compact slot per guardian
+        bytes16[3] slotRoots;
         uint256 maxTxCost; // cap on TXPARAM(0x06), the most one transaction may make the vault pay
         uint32 unstakeDelay;
     }
@@ -118,12 +98,10 @@ contract PQVault {
     ILeafLedger public immutable LEDGER;
     IStakingRegistry public immutable STAKING;
     uint256 public immutable MAX_TX_COST;
-    uint256 public immutable N_GUARDIANS;
-    uint256 public immutable THRESHOLD;
 
-    mapping(uint256 => Guardian) private _guardians;
-    /// Guardian epochs; bumping an epoch revokes all of that guardian's slots.
-    mapping(uint256 => uint256) private _epochs;
+    Guardian[3] private _guardians;
+    /// Three 32-bit guardian epochs packed in one word; bumping an epoch revokes all of that guardian's slots.
+    uint256 private _epochs;
     /// slotId = keccak256(seed16 ‖ root16) => (epoch << 8) | (guardian + 1); 0 = not registered.
     mapping(bytes32 => uint256) public slotInfo;
 
@@ -131,14 +109,12 @@ contract PQVault {
     event SlotRegistered(uint8 indexed guardian, bytes32 indexed slotId, uint256 epoch);
     event SlotRevoked(bytes32 indexed slotId);
     event GuardianReplaced(uint8 indexed guardian, uint256 newEpoch);
-    event Executed(bytes32 indexed sigHash, uint256 guardianMask, uint256 calls);
+    event Executed(bytes32 indexed sigHash, uint8 guardianA, uint8 guardianB, uint256 calls);
     event BatchFailed(bytes32 indexed sigHash, bytes reason);
     event LeafRaced(bytes32 indexed sigHash, bytes32 indexed slotId, uint256 q);
-    event ApprovalRejected(bytes32 indexed sigHash, uint256 index, uint8 reason); // two-frame shape only
 
     error NotSelf();
     error BadShape();
-    error BadConfig();
     error TxTooExpensive();
     error BadEntry(uint256 index, uint8 reason);
     error StaleLeaf(bytes32 slotId, uint256 q);
@@ -151,7 +127,7 @@ contract PQVault {
     // Rejection reasons (BadEntry)
     uint8 private constant R_SCHEME = 1; // not an ARBITRARY entry over the canonical sig hash
     uint8 private constant R_LENGTH = 2;
-    uint8 private constant R_GUARDIAN = 3; // unknown guardian index, or not strictly increasing (duplicate)
+    uint8 private constant R_GUARDIAN = 3; // unknown guardian index, or not above entry 0's (same guardian twice)
     uint8 private constant R_KIND = 4; // unsupported kind
     uint8 private constant R_SLOT = 5; // slot not registered to this guardian in its current epoch
     uint8 private constant R_STALE = 6; // leaf q not above the ledger high-water mark
@@ -186,25 +162,18 @@ contract PQVault {
     }
 
     constructor(Deps memory deps, Init memory init, uint256 stakeAmount) payable {
-        uint256 n = init.guardians.length;
-        if (
-            n > MAX_GUARDIANS || init.threshold < 2 || init.threshold > n || init.slotSeeds.length != n
-                || init.slotRoots.length != n
-        ) revert BadConfig();
         FRAME_OPS = deps.frameOps;
         FORS = IJardinFors(deps.fors);
         SPX = IJardinSpx(deps.spx);
         LEDGER = ILeafLedger(deps.ledger);
         STAKING = IStakingRegistry(deps.staking);
         MAX_TX_COST = init.maxTxCost;
-        N_GUARDIANS = n;
-        THRESHOLD = init.threshold;
-        for (uint256 g = 0; g < n; g++) {
-            for (uint256 o = 0; o < g; o++) {
+        for (uint8 g = 0; g < N_GUARDIANS; g++) {
+            for (uint8 o = 0; o < g; o++) {
                 if (_sameKey(init.guardians[o], init.guardians[g])) revert DuplicateKey();
             }
             _setGuardian(g, init.guardians[g]);
-            _registerSlot(n, uint8(g), init.slotSeeds[g], init.slotRoots[g]);
+            _registerSlot(g, init.slotSeeds[g], init.slotRoots[g]);
         }
         // ERC-8421 staking must be done by the vault itself (the registry keys on msg.sender). Doing
         // it here avoids a bootstrap loop: the vault's first frame tx already needs the stake.
@@ -214,131 +183,66 @@ contract PQVault {
     receive() external payable {}
 
     // =================================================================== VERIFY frames (0 and 1)
-    /// @notice Validation entry for both VERIFY frames. Calldata: selector ‖ from u8 ‖ to u8.
+    /// @notice Validation entry of both VERIFY frames: frame i verifies signature entry i.
     ///         Runs as a STATICCALL; the only side effect is APPROVE (execution in frame 0, payment in frame 1).
     function validate() external {
-        if (msg.data.length != 6) revert BadShape();
-        uint256 from = uint8(msg.data[4]);
-        uint256 to = uint8(msg.data[5]);
-        uint256 t = THRESHOLD;
-
+        if (msg.data.length != 4) revert BadShape();
         // Shape of the whole transaction, as seen through the body frame (index 2).
         Ctx memory c = _frame(2);
-        if (c.frameCount != 3 || c.sigCount != t) revert BadShape();
+        if (c.frameCount != 3 || c.sigCount != THRESHOLD) revert BadShape();
         if (
             c.fMode != MODE_SENDER || c.fTarget != uint256(uint160(address(this)))
                 || bytes4(c.fWord0) != this.execute.selector || c.fFlags != 0
         ) revert BadShape();
         if (c.maxCost > MAX_TX_COST) revert TxTooExpensive();
 
-        // The two VERIFY frames must split [0, t) between them: frame 0 = [0, k), frame 1 = [k, t).
-        uint256 scope;
-        uint256 peer;
-        bytes32 peerWord;
-        if (c.curFrame == 0) {
-            if (from != 0 || to == 0 || to >= t) revert BadShape();
-            (scope, peer, peerWord) = (SCOPE_EXECUTION, 1, _rangeWord(to, t));
-        } else if (c.curFrame == 1) {
-            if (to != t || from == 0 || from >= t) revert BadShape();
-            (scope, peer, peerWord) = (SCOPE_PAYMENT, 0, _rangeWord(0, from));
-        } else {
-            revert BadShape();
-        }
+        uint256 me = c.curFrame;
+        if (me > 1) revert BadShape();
+        uint256 peer = 1 - me;
+        // The other VERIFY frame must be this vault's validate() with the complementary scope.
         Ctx memory p = _frame(peer);
         if (
-            p.fMode != MODE_VERIFY || p.fTarget != uint256(uint160(address(this))) || p.fWord0 != peerWord
+            p.fMode != MODE_VERIFY || p.fTarget != uint256(uint160(address(this)))
+                || p.fWord0 != bytes32(PQVault.validate.selector)
                 || p.fFlags != (peer == 0 ? SCOPE_EXECUTION : SCOPE_PAYMENT)
         ) revert BadShape();
 
-        bytes32 m = messageFor(c.sigHash);
-        // Guardian indices strictly increase across all t entries, so no guardian approves twice.
-        uint256 prev = from == 0 ? NONE : _guardianAt(from - 1);
-        for (uint256 i = from; i < to; i++) {
-            (Ctx memory ci, bytes memory e) = _introspect(i, NONE, NONE);
-            Approval memory a = _check(ci, e, prev, m);
-            if (a.reason == R_STALE) revert StaleLeaf(a.slotId, a.q);
-            if (a.reason != 0) revert BadEntry(i, a.reason);
-            prev = a.guardian;
-        }
-
-        _approve(scope);
-    }
-
-    /// @notice Two-frame fallback, VERIFY frame 0 (scope EXECUTION_AND_PAYMENT). Calldata: selector only.
-    ///         Checks entry 0 (compact) over firstMessageFor(sigHash, restHash), pins frame 1 to execute().
-    function validateAndCommit() external {
-        if (msg.data.length != 4) revert BadShape();
-        uint256 t = THRESHOLD;
-        Ctx memory c = _frame(1);
-        if (c.frameCount != 2 || c.curFrame != 0 || c.sigCount != t) revert BadShape();
-        if (
-            c.fMode != MODE_SENDER || c.fTarget != uint256(uint160(address(this)))
-                || bytes4(c.fWord0) != this.execute.selector || c.fFlags != 0
-        ) revert BadShape();
-        if (c.maxCost > MAX_TX_COST) revert TxTooExpensive();
-
-        bytes32 rest = _restHash(t);
-        (Ctx memory c0, bytes memory e0) = _introspect(0, NONE, NONE);
-        // Only a compact approval fits the 100k budget; refuse a stateless one before verifying it.
-        if (c0.scheme == SCHEME_ARBITRARY && e0.length >= 2 && uint8(e0[1]) != SIG_COMPACT) revert BadEntry(0, R_KIND);
-        Approval memory a = _check(c0, e0, NONE, firstMessageFor(c.sigHash, rest));
+        // Entry 1's guardian must be above entry 0's, so the two approvals come from different guardians.
+        uint256 prev = me == 0 ? NONE : _guardianAt(0);
+        (Ctx memory ci, bytes memory e) = _introspect(me, NONE, NONE);
+        Approval memory a = _check(ci, e, prev, messageFor(c.sigHash));
         if (a.reason == R_STALE) revert StaleLeaf(a.slotId, a.q);
-        if (a.reason != 0) revert BadEntry(0, a.reason);
+        if (a.reason != 0) revert BadEntry(me, a.reason);
 
-        _approve(SCOPE_EXECUTION_AND_PAYMENT);
+        _approve(me == 0 ? SCOPE_EXECUTION : SCOPE_PAYMENT);
     }
 
-    // =================================================================== SENDER frame (last)
+    // =================================================================== SENDER frame (2)
     struct Call {
         address to;
         uint256 value;
         bytes data;
     }
 
-    /// @notice Body frame: (two-frame shape: verify entries [1, t)), consume every approving leaf, then run
-    ///         the batch atomically.
-    /// @dev The vault approves execution only from validate() (three frames, pins frame 2 here) or
-    ///      validateAndCommit() (two frames, pins frame 1 here), so the frame count tells which ran. In the
-    ///      three-frame shape every entry was verified in VERIFY and is only decoded here.
+    /// @notice Body frame: consume both leaves, then run the batch atomically.
+    /// @dev Reached only after both VERIFY frames approved, and validate() pins frame 2 to this function,
+    ///      so both entries are already verified; they are only decoded here.
     function execute(Call[] calldata calls) external onlySelf {
-        uint256 t = THRESHOLD;
         (Ctx memory c0, bytes memory e0) = _introspect(0, NONE, Q_OFFSET + 1);
-        bool twoFrame = c0.frameCount == 2;
-        if (!twoFrame && c0.frameCount != 3) revert BadShape();
+        (Ctx memory c1, bytes memory e1) = _introspect(1, NONE, Q_OFFSET + 1);
+        Approval memory a = _decode(c0, e0);
+        Approval memory b = _decode(c1, e1);
+        if (a.reason != 0) revert BadEntry(0, a.reason); // verified in VERIFY frame 0; defensive
+        if (b.reason != 0) revert BadEntry(1, b.reason); // verified in VERIFY frame 1; defensive
         bytes32 sigHash = c0.sigHash;
-        Approval memory a0 = _decode(c0, e0);
-        if (a0.reason != 0) revert BadEntry(0, a0.reason); // verified in VERIFY frame 0; defensive
-        uint256 mask = 1 << a0.guardian;
-        // Leaf consumption is an atomic check-and-update. A leaf consumed by another transaction since
-        // validation (a race) fails here; the other leaves are still consumed (their signatures are public
-        // now) and nothing is executed.
-        bool blocked = !_consume(sigHash, a0);
-        bytes32 m = messageFor(sigHash);
-        uint256 prev = NONE;
-        for (uint256 i = 1; i < t; i++) {
-            Approval memory a;
-            if (twoFrame) {
-                (Ctx memory ci, bytes memory ei) = _introspect(i, NONE, NONE);
-                a = _check(ci, ei, prev, m);
-                if (a.reason == 0 && (mask >> a.guardian) & 1 == 1) a.reason = R_GUARDIAN; // same as entry 0
-                if (a.reason != 0) {
-                    emit ApprovalRejected(sigHash, i, a.reason);
-                    blocked = true;
-                    break;
-                }
-            } else {
-                (Ctx memory ci, bytes memory ei) = _introspect(i, NONE, Q_OFFSET + 1);
-                a = _decode(ci, ei);
-                if (a.reason != 0) revert BadEntry(i, a.reason); // verified in VERIFY; defensive
-            }
-            prev = a.guardian;
-            mask |= 1 << a.guardian;
-            if (!_consume(sigHash, a)) blocked = true;
-        }
-        if (blocked) return;
+        // Atomic check-and-update per leaf. A leaf consumed by another transaction since validation (a race)
+        // fails here; the other leaf is still consumed (its signature is public now) and nothing executes.
+        bool okA = _consume(sigHash, a);
+        bool okB = _consume(sigHash, b);
+        if (!okA || !okB) return;
 
         try this.runBatch(calls) {
-            emit Executed(sigHash, mask, calls.length);
+            emit Executed(sigHash, a.guardian, b.guardian, calls.length);
         } catch (bytes memory reason) {
             emit BatchFailed(sigHash, reason);
         }
@@ -352,11 +256,11 @@ contract PQVault {
         }
     }
 
-    // =================================================================== guardian management (t-of-n via execute)
+    // =================================================================== guardian management (2-of-3 via execute)
     /// @notice Key rotation: authorise a new compact slot for guardian `g` (e.g. after a slot is exhausted
     ///         or after the guardian restored from backup and generated fresh slot randomness).
     function registerSlot(uint8 g, bytes16 seed, bytes16 root) external onlySelf {
-        _registerSlot(N_GUARDIANS, g, seed, root);
+        _registerSlot(g, seed, root);
     }
 
     function revokeSlot(bytes32 slotId) external onlySelf {
@@ -364,21 +268,20 @@ contract PQVault {
         emit SlotRevoked(slotId);
     }
 
-    /// @notice Key-loss recovery / guardian replacement: t other guardians install new master and slot keys
-    ///         for `g`. Bumping the epoch revokes every slot `g` held before.
+    /// @notice Key-loss recovery / guardian replacement: the other two guardians install new master and slot
+    ///         keys for `g`. Bumping the epoch revokes every slot `g` held before.
     function replaceGuardian(uint8 g, Guardian calldata master, bytes16 slotSeed, bytes16 slotRoot)
         external
         onlySelf
     {
-        uint256 n = N_GUARDIANS;
-        if (g >= n) revert BadGuardian();
-        for (uint256 o = 0; o < n; o++) {
+        if (g >= N_GUARDIANS) revert BadGuardian();
+        for (uint8 o = 0; o < N_GUARDIANS; o++) {
             if (o != g && _sameKey(_guardians[o], master)) revert DuplicateKey();
         }
-        uint256 epoch = _epochs[g] + 1;
-        _epochs[g] = epoch;
+        uint256 epoch = _epochOf(g) + 1;
+        _epochs = (_epochs & ~(uint256(0xffffffff) << (32 * g))) | ((epoch & 0xffffffff) << (32 * g));
         _setGuardian(g, master);
-        _registerSlot(n, g, slotSeed, slotRoot);
+        _registerSlot(g, slotSeed, slotRoot);
         emit GuardianReplaced(g, epoch);
     }
 
@@ -396,56 +299,50 @@ contract PQVault {
     }
 
     function epochOf(uint8 g) external view returns (uint256) {
-        return _epochs[g];
+        return _epochOf(g);
     }
 
     function slotGuardian(bytes32 slotId) external view returns (bool active, uint8 g) {
         uint256 info = slotInfo[slotId];
         if (info == 0) return (false, 0);
         g = uint8((info & 0xff) - 1);
-        active = (info >> 8) == _epochs[g];
+        active = (info >> 8) == _epochOf(g);
     }
 
-    /// @notice What every approving guardian signs (three-frame shape; entries 1..t-1 of the two-frame shape).
+    /// @notice What both approving guardians sign.
     function messageFor(bytes32 sigHash) public pure returns (bytes32) {
         return keccak256(abi.encode(DOMAIN, sigHash));
     }
 
-    /// @notice What entry 0 signs in the two-frame shape: it also commits to every other entry's exact bytes.
-    /// @param restHash keccak256(keccak256(entry1) ‖ ... ‖ keccak256(entry t-1))
-    function firstMessageFor(bytes32 sigHash, bytes32 restHash) public pure returns (bytes32) {
-        return keccak256(abi.encode(DOMAIN, sigHash, restHash));
-    }
-
     // =================================================================== internals
-    function _rangeWord(uint256 from, uint256 to) private pure returns (bytes32) {
-        return bytes32(abi.encodePacked(PQVault.validate.selector, uint8(from), uint8(to)));
-    }
-
     function _sameKey(Guardian memory a, Guardian memory b) private pure returns (bool) {
         return a.spxSeed == b.spxSeed && a.spxRoot == b.spxRoot;
     }
 
-    function _setGuardian(uint256 g, Guardian memory m) private {
+    function _setGuardian(uint8 g, Guardian memory m) private {
         _requireCanonical(m.spxSeed, m.spxRoot);
         if (m.spxSeed == bytes32(0) && m.spxRoot == bytes32(0)) revert NonCanonicalKey();
         _guardians[g] = m;
     }
 
-    function _registerSlot(uint256 n, uint8 g, bytes16 seed, bytes16 root) private {
-        if (g >= n) revert BadGuardian();
+    function _registerSlot(uint8 g, bytes16 seed, bytes16 root) private {
+        if (g >= N_GUARDIANS) revert BadGuardian();
         _requireCanonical(bytes32(seed), bytes32(root));
         if (seed == bytes16(0) && root == bytes16(0)) revert NonCanonicalKey();
         bytes32 slotId = keccak256(abi.encodePacked(seed, root));
         // A slot key held (in its current epoch) by another guardian would let one device approve twice.
         uint256 info = slotInfo[slotId];
         if (info != 0) {
-            uint256 owner = (info & 0xff) - 1;
-            if (owner != g && (info >> 8) == _epochs[owner]) revert DuplicateKey();
+            uint8 owner = uint8((info & 0xff) - 1);
+            if (owner != g && (info >> 8) == _epochOf(owner)) revert DuplicateKey();
         }
-        uint256 epoch = _epochs[g];
+        uint256 epoch = _epochOf(g);
         slotInfo[slotId] = (epoch << 8) | (uint256(g) + 1);
         emit SlotRegistered(g, slotId, epoch);
+    }
+
+    function _epochOf(uint8 g) private view returns (uint256) {
+        return (_epochs >> (32 * g)) & 0xffffffff;
     }
 
     /// PQ public-key components are 16-byte values stored high-aligned; dirty low bits would brick the key.
@@ -456,7 +353,7 @@ contract PQVault {
     }
 
     /// Structural decode of an entry (no cryptography). `e` may be truncated after the leaf byte.
-    function _decode(Ctx memory c, bytes memory e) private view returns (Approval memory a) {
+    function _decode(Ctx memory c, bytes memory e) private pure returns (Approval memory a) {
         if (c.scheme != SCHEME_ARBITRARY || c.msgWord != 0) {
             a.reason = R_SCHEME;
             return a;
@@ -496,7 +393,7 @@ contract PQVault {
     }
 
     /// Full check of one entry against message `m`.
-    /// @param prev guardian index of the previous entry (NONE for the first): must be strictly smaller.
+    /// @param prev guardian index of entry 0 when checking entry 1 (NONE for entry 0): must be strictly smaller.
     function _check(Ctx memory c, bytes memory e, uint256 prev, bytes32 m) private view returns (Approval memory a) {
         a = _decode(c, e);
         if (a.reason != 0) return a;
@@ -506,7 +403,7 @@ contract PQVault {
         }
         if (a.kind == SIG_COMPACT) {
             uint256 info = slotInfo[a.slotId];
-            if (info != ((_epochs[a.guardian] << 8) | (uint256(a.guardian) + 1))) {
+            if (info != ((_epochOf(a.guardian) << 8) | (uint256(a.guardian) + 1))) {
                 a.reason = R_SLOT;
                 return a;
             }
@@ -541,26 +438,6 @@ contract PQVault {
             emit LeafRaced(sigHash, a.slotId, a.q);
             return false;
         }
-    }
-
-    /// restHash for the two-frame shape: keccak256(keccak256(entry1) ‖ ... ‖ keccak256(entry t-1)).
-    /// Each entry's return buffer is released after hashing, so memory does not grow with t.
-    function _restHash(uint256 t) private view returns (bytes32) {
-        bytes memory hs = new bytes(32 * (t - 1));
-        for (uint256 i = 1; i < t; i++) {
-            uint256 fmp;
-            assembly {
-                fmp := mload(0x40)
-            }
-            (Ctx memory ci, bytes memory ei) = _introspect(i, NONE, NONE);
-            if (ci.scheme != SCHEME_ARBITRARY || ci.msgWord != 0) revert BadEntry(i, R_SCHEME);
-            bytes32 k = keccak256(ei);
-            assembly {
-                mstore(add(add(hs, 0x20), mul(sub(i, 1), 0x20)), k)
-                mstore(0x40, fmp)
-            }
-        }
-        return keccak256(hs);
     }
 
     /// Guardian index (first byte) of signature entry `i`, copying only that byte.
