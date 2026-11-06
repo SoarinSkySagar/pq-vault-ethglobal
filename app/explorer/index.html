@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PQ-Vault explorer</title>
+<meta name="color-scheme" content="light">
+<style>
+  :root {
+    --page: #EDF0F3;
+    --panel: #FFFFFF;
+    --ink: #18212E;
+    --slate: #5A6878;
+    --rule: #D6DCE3;
+    --soft: #F4F6F8;
+    --verify: #3B5BA9;
+    --verify-soft: #DCE3F2;
+    --sender: #2F6F5E;
+    --sender-soft: #D6E6E0;
+    --default: #7A6A55;
+    --bad: #B4372F;
+    --sans: "Avenir Next", "Segoe UI Variable Text", "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--page); color: var(--ink); font: 15px/1.5 var(--sans); font-variant-numeric: tabular-nums; }
+  body { margin: 0; }
+  a { color: var(--verify); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  :focus-visible { outline: 3px solid var(--verify); outline-offset: 2px; }
+  .mono { font-family: var(--mono); font-size: 0.9em; }
+  .muted { color: var(--slate); }
+  .small { font-size: 13px; }
+
+  header { background: var(--ink); color: #fff; }
+  .bar { max-width: 1200px; margin: 0 auto; display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; padding: 14px 24px; }
+  .brand { font-weight: 700; font-size: 18px; color: #fff; }
+  .brand span { font-weight: 400; color: #AEB9C7; margin-left: 8px; font-size: 14px; }
+  form.search { flex: 1; min-width: 260px; display: flex; }
+  form.search input { flex: 1; border: 0; border-radius: 8px 0 0 8px; padding: 9px 12px; font: inherit; }
+  form.search button { border: 0; border-radius: 0 8px 8px 0; padding: 0 16px; background: var(--verify); color: #fff; font: inherit; cursor: pointer; }
+  .chain { font-size: 13px; color: #AEB9C7; }
+
+  main { max-width: 1200px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; word-break: break-all; }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  .panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 12px; padding: 18px 20px; margin-bottom: 20px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .err { color: var(--bad); }
+
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-weight: 600; color: var(--slate); font-size: 13px; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--rule); }
+  td { padding: 8px 10px 8px 0; border-bottom: 1px solid var(--rule); vertical-align: top; font-size: 14px; }
+  tr:last-child td { border-bottom: 0; }
+  td.r, th.r { text-align: right; }
+
+  dl.kv { display: grid; grid-template-columns: 190px 1fr; gap: 8px 16px; margin: 0; }
+  dl.kv dt { color: var(--slate); }
+  dl.kv dd { margin: 0; word-break: break-all; }
+
+  .tag { display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: .02em; padding: 1px 7px; border-radius: 5px; margin-right: 3px; }
+  .tag.VERIFY { background: var(--verify-soft); color: var(--verify); }
+  .tag.SENDER { background: var(--sender-soft); color: var(--sender); }
+  .tag.DEFAULT { background: var(--soft); color: var(--default); }
+  .tag.legacy { background: var(--soft); color: var(--slate); }
+  .ok { color: var(--sender); font-weight: 600; }
+  .fail { color: var(--bad); font-weight: 600; }
+
+  /* the frame strip: one segment per frame, width ~ gas used */
+  .strip { display: flex; height: 44px; border-radius: 8px; overflow: hidden; border: 1px solid var(--rule); margin: 4px 0 6px; }
+  .strip a { display: flex; flex-direction: column; justify-content: center; padding: 0 10px; color: #fff; font-size: 13px; min-width: 76px;
+    text-decoration: none; border-right: 2px solid var(--panel); }
+  .strip a:last-child { border-right: 0; }
+  .strip a.VERIFY { background: var(--verify); }
+  .strip a.SENDER { background: var(--sender); }
+  .strip a.DEFAULT { background: var(--default); }
+  .strip a.failed { background: var(--bad); }
+  .strip b { font-weight: 700; }
+
+  .frame { border: 1px solid var(--rule); border-radius: 10px; margin-top: 14px; overflow: hidden; }
+  .frame-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; padding: 12px 16px; background: var(--soft); border-bottom: 1px solid var(--rule); }
+  .frame-head h3 { margin: 0; font-size: 16px; }
+  .frame-body { padding: 12px 16px; }
+  .gasbar { height: 8px; background: var(--soft); border-radius: 4px; overflow: hidden; margin: 4px 0 2px; max-width: 420px; }
+  .gasbar span { display: block; height: 100%; background: var(--verify); }
+  .frame.SENDER .gasbar span { background: var(--sender); }
+  .purpose { margin: 0 0 10px; }
+  .sub { margin-top: 12px; }
+  .sub h4 { margin: 0 0 6px; font-size: 14px; }
+  .log { padding: 8px 0; border-top: 1px dashed var(--rule); font-size: 14px; }
+  .log:first-child { border-top: 0; }
+  .args { margin: 4px 0 0 14px; }
+  .args div { word-break: break-all; }
+  pre.data { white-space: pre-wrap; word-break: break-all; font-family: var(--mono); font-size: 12px; background: var(--soft); padding: 10px; border-radius: 8px;
+    max-height: 160px; overflow: auto; margin: 6px 0 0; }
+  details summary { cursor: pointer; color: var(--slate); font-size: 13px; }
+  .nav { display: flex; gap: 14px; margin: 6px 0 16px; font-size: 14px; }
+
+  @media (max-width: 860px) {
+    .grid2 { grid-template-columns: 1fr; }
+    dl.kv { grid-template-columns: 1fr; gap: 2px; }
+    dl.kv dd { margin-bottom: 8px; }
+    main { padding: 16px; }
+    .hide-sm { display: none; }
+  }
+</style>
+</head>
+<body>
+<header><div class="bar">
+  <a class="brand" href="#/">PQ-Vault explorer<span>EIP-8141 frame transactions</span></a>
+  <form class="search" id="search" role="search"><input id="q" placeholder="Block number, tx hash, address, or a name like alice" aria-label="Search">
+    <button type="submit">Search</button></form>
+  <span class="chain" id="chain"></span>
+</div></header>
+<main id="main"><p class="muted">Loading…</p></main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const short = (h, n = 10) => h ? (h.length > 2 * n + 2 ? h.slice(0, n) + "…" + h.slice(-6) : h) : "";
+const fmt = (n) => n == null ? "–" : Number(n).toLocaleString("en-US");
+function eth(w, dp = 6) {
+  if (w == null) return "–";
+  w = BigInt(w);
+  const i = w / 10n ** 18n, f = (w % 10n ** 18n).toString().padStart(18, "0").slice(0, dp).replace(/0+$/, "");
+  return i.toLocaleString("en-US") + (f ? "." + f : "") + " ETH";
+}
+function ago(ts) {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  return s < 60 ? `${s} s ago` : s < 3600 ? `${Math.floor(s / 60)} min ago` : `${Math.floor(s / 3600)} h ago`;
+}
+async function api(p) {
+  const r = await fetch(p); const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `request failed (${r.status})`); return j;
+}
+const addr = (a, n) => a ? `<a href="#/address/${a.toLowerCase()}">${n ? esc(n) + " " : ""}<span class="mono ${n ? "muted" : ""}">${short(a, n ? 6 : 10)}</span></a>` : "–";
+const txl = (h) => `<a class="mono" href="#/tx/${h}">${short(h)}</a>`;
+const blk = (n) => `<a href="#/block/${n}">${fmt(n)}</a>`;
+const status = (s) => s === "0x1" ? `<span class="ok">success</span>` : s ? `<span class="fail">failed</span>` : "–";
+function shape(t) {
+  if (t.type !== "0x6") return `<span class="tag legacy">${t.type === "0x0" ? "legacy" : esc(t.type)}</span>`;
+  return (t.shape || "").split("+").map((m) => `<span class="tag ${m}">${m}</span>`).join("");
+}
+
+// ---------- pages ----------
+async function home() {
+  const o = await api("/api/overview");
+  $("chain").textContent = o.chainId ? `chain ${o.chainId}, block ${fmt(o.head)}` : "node unreachable";
+  return `<div class="panel"><h1>Local EIP-8141 devnet</h1>
+      <p class="muted small" style="margin:0">${esc(o.client || "")}<br>${esc(o.rpc)}. ${fmt(o.txCount)} transactions indexed, ${fmt(o.frameTxCount)} of them frame transactions.</p></div>
+    <div class="grid2">
+      <div class="panel"><h2>Latest blocks</h2><table><thead><tr><th>Block</th><th>Age</th><th class="r">Txs</th><th class="r hide-sm">Gas used</th></tr></thead><tbody>
+        ${o.blocks.map((b) => `<tr><td>${blk(b.number)}</td><td class="muted">${ago(b.timestamp)}</td><td class="r">${b.txs}</td><td class="r hide-sm">${fmt(b.gasUsed)}</td></tr>`).join("")}
+      </tbody></table></div>
+      <div class="panel"><h2>Latest transactions</h2>${txTable(o.txs, true)}</div>
+    </div>`;
+}
+
+function txTable(txs, compact) {
+  if (!txs.length) return `<p class="muted">No transactions yet.</p>`;
+  return `<table><thead><tr><th>Transaction</th><th>Frames</th><th>From</th><th>To</th>${compact ? "" : "<th>What</th>"}<th class="r">Value</th>${compact ? "" : `<th>Status</th>`}</tr></thead><tbody>
+    ${txs.map((t) => `<tr><td>${txl(t.hash)}<div class="small muted">block ${blk(t.block)}</div></td><td>${shape(t)}</td>
+      <td>${addr(t.from, t.fromName)}</td><td>${addr(t.to, t.toName)}</td>${compact ? "" : `<td>${esc(t.what || "")}</td>`}
+      <td class="r">${t.valueWei && t.valueWei !== "0" ? eth(t.valueWei, 4) : "–"}</td>${compact ? "" : `<td>${status(t.status)}</td>`}</tr>`).join("")}
+  </tbody></table>`;
+}
+
+async function blockPage(id) {
+  const b = await api("/api/block/" + id);
+  return `<div class="nav"><a href="#/block/${b.number - 1}">← Block ${fmt(b.number - 1)}</a><a href="#/block/${b.number + 1}">Block ${fmt(b.number + 1)} →</a></div>
+    <div class="panel"><h1>Block ${fmt(b.number)}</h1><p class="muted small" style="margin:0 0 14px">${new Date(b.timestamp * 1000).toLocaleString()} (${ago(b.timestamp)})</p>
+    <dl class="kv"><dt>Hash</dt><dd class="mono">${esc(b.hash)}</dd><dt>Parent</dt><dd><a class="mono" href="#/block/${b.number - 1}">${esc(b.parentHash)}</a></dd>
+      <dt>Transactions</dt><dd>${b.txs.length}</dd><dt>Gas used</dt><dd>${fmt(b.gasUsed)} of ${fmt(b.gasLimit)}</dd>
+      <dt>Base fee</dt><dd>${fmt(b.baseFeePerGas)} wei</dd><dt>Fee recipient</dt><dd>${addr(b.miner)}</dd>
+      <dt>Slot</dt><dd>${fmt(parseInt(b.slotNumber || "0x0", 16))}</dd><dt>Size</dt><dd>${fmt(b.size)} bytes</dd>
+      <dt>State root</dt><dd class="mono">${esc(b.stateRoot)}</dd></dl></div>
+    <div class="panel"><h2>Transactions</h2>${txTable(b.txs, false)}</div>`;
+}
+
+function argsHtml(a) {
+  const skip = new Set(["fromName", "toName", "vaultName", "reporterName"]);
+  return Object.entries(a || {}).filter(([k]) => !skip.has(k)).map(([k, v]) => {
+    let shown = esc(v);
+    if (/^0x[0-9a-f]{40}$/i.test(String(v))) shown = addr(v, a[k + "Name"]);
+    else if (k === "value") shown = eth(v, 18);
+    else if (/^0x[0-9a-f]{64}$/i.test(String(v))) shown = `<span class="mono">${esc(v)}</span>`;
+    return `<div><span class="muted">${esc(k)}:</span> ${shown}</div>`;
+  }).join("");
+}
+function logHtml(l) {
+  if (!l.event) return `<div class="log"><span class="muted">log from</span> ${addr(l.address, l.addressName)}
+      <details><summary>raw topics and data</summary><pre class="data">${esc(JSON.stringify({ topics: l.topics, data: l.data }, null, 1))}</pre></details></div>`;
+  return `<div class="log"><strong>${esc(l.event)}</strong> <span class="muted small">from</span> ${addr(l.address, l.addressName)}<div class="args">${argsHtml(l.args)}</div></div>`;
+}
+
+async function txPage(h) {
+  const t = await api("/api/tx/" + h);
+  let body = `<div class="panel"><h1>${t.type === "0x6" ? "Frame transaction" : esc(t.kind) + " transaction"}</h1>
+    <p class="mono small muted" style="margin:0 0 14px;word-break:break-all">${esc(t.hash)}</p>
+    <dl class="kv"><dt>Status</dt><dd>${status(t.status)}</dd><dt>Block</dt><dd>${blk(t.block)} <span class="muted">(position ${t.index})</span></dd>`;
+  if (t.type === "0x6") {
+    body += `<dt>Sender</dt><dd>${addr(t.sender, t.senderName)}</dd><dt>Payer</dt><dd>${addr(t.payer, t.payerName)}</dd>
+      <dt>Nonce</dt><dd>${fmt(t.nonce)} <span class="muted small">(nonce key ${esc((t.nonceKeys || []).join(", "))})</span></dd>
+      <dt>Gas used</dt><dd>${fmt(t.gasUsed)}</dd><dt>Fee paid</dt><dd>${eth(t.feeWei, 8)} <span class="muted small">at ${fmt(t.effectiveGasPrice)} wei per gas</span></dd>
+      <dt>Max fee per gas</dt><dd>${fmt(t.maxFeePerGas)} wei</dd>
+      <dt>Signature bytes</dt><dd>${fmt(t.sigBytes)} <span class="muted small">(post-quantum signatures dominate the bytes, and frame transactions are billed by bytes)</span></dd></dl></div>`;
+    const total = t.frames.reduce((s, f) => s + (f.gasUsed || 0), 0) || 1;
+    body += `<div class="panel"><h2>Frames</h2><div class="strip" role="img" aria-label="Frames by gas used">${t.frames.map((f) =>
+        `<a href="#" data-frame="${f.index}" class="${f.mode} ${f.status && f.status !== "0x1" ? "failed" : ""}" style="flex:${Math.max(f.gasUsed || 0, total * 0.08)}">
+          <b>${f.index}. ${f.mode}</b><span>${fmt(f.gasUsed)} gas</span></a>`).join("")}</div>
+      <p class="small muted" style="margin:0">Frames run in order. VERIFY frames are read-only checks that grant approval; the SENDER frame acts as the account.</p>
+      ${t.frames.map(frameHtml).join("")}</div>`;
+    body += `<div class="panel"><h2>Signatures</h2>
+      <p class="small muted" style="margin:0 0 10px">ARBITRARY entries are not checked by the protocol; the vault's VERIFY frames check them. Frame <em>i</em> verifies entry <em>i</em>.</p>
+      <table><thead><tr><th>#</th><th>Guardian</th><th>Kind</th><th>Leaf</th><th class="hide-sm">Slot</th><th class="r">Bytes</th></tr></thead><tbody>
+      ${t.signatures.map((s) => `<tr><td>${s.index}</td><td>${s.guardian != null ? `guardian ${s.guardian}${s.guardianName ? ` (${esc(s.guardianName)})` : ""}` : esc(s.scheme)}</td>
+        <td>${esc(s.kind || s.scheme)}</td><td>${s.leaf != null ? `${s.leaf} of ${s.slotLeaves}` : "–"}</td>
+        <td class="hide-sm mono small">${s.slotId ? short(s.slotId) : "–"}</td><td class="r">${fmt(s.bytes)}</td></tr>`).join("")}</tbody></table></div>`;
+  } else {
+    body += `<dt>From</dt><dd>${addr(t.from, t.fromName)}</dd><dt>To</dt><dd>${t.to ? addr(t.to, t.toName) : `contract creation${t.contractCreated ? ": " + addr(t.contractCreated, t.contractCreatedName) : ""}`}</dd>
+      <dt>Value</dt><dd>${eth(t.valueWei, 18)}</dd><dt>Call</dt><dd>${esc(t.call || "–")}</dd><dt>Nonce</dt><dd>${fmt(t.nonce)}</dd>
+      <dt>Gas used</dt><dd>${fmt(t.gasUsed)}</dd><dt>Fee paid</dt><dd>${eth(t.feeWei, 8)}</dd>
+      <dt>Input</dt><dd>${fmt(t.inputBytes)} bytes<details><summary>show</summary><pre class="data">${esc(t.input)}</pre></details></dd></dl></div>`;
+  }
+  if (t.logs.length) body += `<div class="panel"><h2>All logs (${t.logs.length})</h2>${t.logs.map(logHtml).join("")}</div>`;
+  return body;
+}
+
+function frameHtml(f) {
+  const pct = f.gasLimit ? Math.min(100, 100 * (f.gasUsed || 0) / f.gasLimit) : 0;
+  const calls = f.calls ? `<div class="sub"><h4>Calls the vault made</h4><table><thead><tr><th>To</th><th>Call</th><th class="r">Value</th></tr></thead><tbody>
+      ${f.calls.map((c) => `<tr><td>${addr(c.to, c.toName)}</td><td>${esc(c.call || c.data.slice(0, 10))}</td><td class="r">${eth(c.valueWei, 18)}</td></tr>`).join("")}</tbody></table></div>` : "";
+  return `<div class="frame ${f.mode}" id="frame-${f.index}">
+    <div class="frame-head"><h3>Frame ${f.index}</h3><span class="tag ${f.mode}">${f.mode}</span><span class="muted small">${esc(f.scope || "")}${f.atomicBatch ? ", atomic batch" : ""}</span>
+      <span style="margin-left:auto">${status(f.status)}</span></div>
+    <div class="frame-body"><p class="purpose">${esc(f.purpose)}</p>
+      <dl class="kv"><dt>Target</dt><dd>${addr(f.target, f.targetName)}${f.targetIsSender ? ` <span class="muted small">(empty target: the sender)</span>` : ""}</dd>
+        <dt>Call</dt><dd>${esc(f.call || (f.dataBytes ? "unknown selector" : "none"))} <span class="muted small">(${fmt(f.dataBytes)} bytes of data)</span></dd>
+        <dt>Gas</dt><dd>${fmt(f.gasUsed)} used of ${fmt(f.gasLimit)}<div class="gasbar"><span style="width:${pct.toFixed(1)}%"></span></div></dd>
+        ${f.stateGasUsed ? `<dt>State gas</dt><dd>${fmt(f.stateGasUsed)} <span class="muted small">(new storage, e.g. a first-use LeafLedger slot)</span></dd>` : ""}
+        ${f.valueWei !== "0" ? `<dt>Value</dt><dd>${eth(f.valueWei, 18)}</dd>` : ""}</dl>
+      ${calls}
+      ${f.logs.length ? `<div class="sub"><h4>Logs emitted in this frame</h4>${f.logs.map(logHtml).join("")}</div>` : ""}
+      <details class="sub"><summary>Frame data</summary><pre class="data">${esc(f.data)}</pre></details></div></div>`;
+}
+
+async function addressPage(a) {
+  const d = await api("/api/address/" + a);
+  return `<div class="panel"><h1>${esc(d.name || "Address")}</h1><p class="mono small muted" style="margin:0 0 14px">${esc(d.address)}</p>
+    <dl class="kv"><dt>Balance</dt><dd>${eth(d.balanceWei, 6)}</dd><dt>Nonce</dt><dd>${fmt(d.nonce)}</dd>
+      <dt>Code</dt><dd>${d.codeBytes ? `${fmt(d.codeBytes)} bytes (a contract)` : "none (an externally owned account)"}</dd>
+      <dt>Transactions</dt><dd>${fmt(d.txTotal)} touching this address</dd></dl></div>
+    <div class="panel"><h2>Transactions</h2>${txTable(d.txs, false)}</div>`;
+}
+
+// ---------- router ----------
+let timer = null;
+async function route() {
+  clearTimeout(timer);
+  const h = location.hash.replace(/^#\/?/, "");
+  const [page, arg] = h.split("/");
+  try {
+    $("main").innerHTML = page === "block" ? await blockPage(arg) : page === "tx" ? await txPage(arg)
+      : page === "address" ? await addressPage(arg) : await home();
+    if (!page) timer = setTimeout(route, 4000);
+  } catch (e) { $("main").innerHTML = `<div class="panel"><p class="err">${esc(e.message)}</p><p><a href="#/">Back to the latest blocks</a></p></div>`; }
+}
+window.addEventListener("hashchange", route);
+document.addEventListener("click", (ev) => {
+  const a = ev.target.closest("a[data-frame]"); if (!a) return;
+  ev.preventDefault(); const el = document.getElementById("frame-" + a.dataset.frame); if (el) el.scrollIntoView({ block: "start" });
+});
+$("search").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  try { const r = await api("/api/search?q=" + encodeURIComponent($("q").value)); location.hash = "#/" + r.route; }
+  catch (e) { $("main").innerHTML = `<div class="panel"><p class="err">${esc(e.message)}</p></div>`; }
+});
+api("/api/overview").then((o) => { $("chain").textContent = o.chainId ? `chain ${o.chainId}, block ${fmt(o.head)}` : ""; }).catch(() => {});
+route();
+</script>
+</body>
+</html>

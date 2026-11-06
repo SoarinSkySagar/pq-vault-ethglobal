@@ -50,6 +50,8 @@ pqv/server.py, app/index.html      wallet website (127.0.0.1 only): /api/wallet,
 pqv/wallet.py, app/wallet/         personal MetaMask-style wallet, one process per person (infra/wallets.sh start a b c);
                                    state in .devnet/<net>/wallets/<name>/, shared contracts underneath (WalletNet);
                                    activity from EIP-7708 Transfer logs (0xfff…fffe); faucet/deploy via the deployer (file lock)
+pqv/explorer.py, app/explorer/     block explorer (:8300) that decodes frame txs: frames (mode, scope, call, gas, logs),
+                                   signature entries (guardian, compact/SPX, leaf), named addresses; background indexer
 pqv/multisig.py                    shared 2-of-3 vaults between wallets: invite/join/deploy, propose/approve/submit; shared
                                    folder .devnet/<net>/vaults/<id>/ under flock; VERIFY limits sized for SPX so the tx is
                                    fixed before signing; a proposal expires when the vault nonce moves

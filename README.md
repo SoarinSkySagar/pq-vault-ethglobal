@@ -69,6 +69,20 @@ python3.12 -m pqv.server local       # wallet website on http://127.0.0.1:8141 (
 infra/local-net.sh status | down
 ```
 
+### Block explorer for frame transactions
+
+```sh
+python3.12 -m pqv.explorer            # http://127.0.0.1:8300
+```
+
+Standard explorers do not understand EIP-8141 frame transactions. This one lists blocks and transactions and opens
+each frame transaction frame by frame: a strip of the frames sized by gas, then for each frame its mode (VERIFY /
+SENDER), the approval it grants, its target, the decoded call (including the vault's batch), gas used of its limit,
+status, and the logs it emitted (`LeafConsumed`, `Executed`, EIP-7708 ETH transfers…). Signature entries are decoded
+too: which guardian (by wallet name for shared vaults), compact one-time leaf or stateless SPX, and which leaf of its
+slot. Addresses are named from the local devnet state (contracts, vaults, wallet accounts); search accepts a block
+number, hash, address or name.
+
 ### Personal wallets for a demo (MetaMask-style)
 
 ```sh
