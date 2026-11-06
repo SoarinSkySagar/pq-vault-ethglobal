@@ -330,14 +330,20 @@ versus 378,782 for the two-frame design (+987: one more frame and 8 more bytes o
 with two first-use ledger slots costs 751,005 (= 13,725 + 64 × 8,460 + 195,840 state gas). About 91% of a 2-of-n
 transfer's bytes are the two 2,705-byte FORS signatures.
 
-**Not shown:** admission on the public chain-1337 gateway. It runs the stock sidecar, so it rejects every t ≥ 2
-three-frame transaction with the combined-cap error above; the draft upstream change is in
-`infra/sidecar-budget010/README.md` (not submitted). §8.2 is the fallback that works with it today.
+**Public gateway (measured, then dropped as a target).** We had assumed the public chain-1337 gateway runs the
+stock sidecar rules. Measured on 2026-11-06 with the current contract deployed there (vault `0x9635…880f`), it does
+not: it *admitted* a staked three-frame transaction with a 200,200-gas prefix (`0xf9eba3c1…e8e1a`; its rule report
+passes `structure`, the budget check), and an *unstaked* three-frame copy also passed `structure` and was rejected
+only by the storage rule (`unstaked sender accessed <LeafLedger> slot`). Neither that transaction nor an earlier
+admitted two-frame one was included within 15 minutes (status stayed `New`). Because its rules and its bundler are
+outside our control and not reproducible, the project now targets a local network (`infra/local-net.sh`: ethrex
+eip8141-tracer + Lighthouse + skandha, [BUDGET-010] or stock image). The [BUDGET-010] patch stays relevant for the
+published sidecar image.
 
 ### 8.2 Two-frame fallback for combined-100k mempools (local devnet, `docs/RECEIPTS-two-frame-fallback.md`)
 
 The vault accepts a second shape, selected by the frame count, for mempools that apply EIP-8141's combined
-`MAX_VERIFY_GAS` (the deployed workshop gateway):
+`MAX_VERIFY_GAS` (the stock workshop sidecar image `2e22ff0a`):
 
 ```
 signatures: entry 0 = the committer's compact approval; entries 1..t-1 in increasing guardian order
@@ -351,8 +357,8 @@ elided from the signature hash, so entry 0 signs **last**, over `firstMessageFor
 the VERIFY frame (test `test_twoFrame_relayerMutatedLaterEntry_invalid`). Any guardian may be the committer, but
 its approval must be compact (SPX does not fit). The residual cost is the old two-frame one, now bounded by the
 same rule for every t: if a later approval is invalid, nothing executes, the fee (≤ `MAX_TX_COST`) is paid and the
-committer's leaf is consumed (`ApprovalRejected`). The driver picks the shape per network (`--frames`, default 2
-on `public`, 3 elsewhere). VERIFY gas: 89,647 (t = 2) and 89,996 (t = 3) in Foundry, 85,506 / 89,468 on chain;
+committer's leaf is consumed (`ApprovalRejected`). The driver uses three frames unless told otherwise (`--frames 2`,
+or `"frames": 2` in `network.json`). VERIFY gas: 89,647 (t = 2) and 89,996 (t = 3) in Foundry, 85,506 / 89,468 on chain;
 declared limit `100,000 − 100·t`, so prefix + signature cost is exactly 100,000.
 
 Run 2 on the local devnet (fresh factory/ledger/vaults with the current code), **stock** sidecar (same image
@@ -397,7 +403,8 @@ The billed gas of a two-frame 2-of-n transfer, 378,782, equals the original publ
   (e.g. a JARDIN 4337 account) is not tracked.
 - **Single guardian could spend fees (two-frame design only).** Resolved by the three-frame design (§8.1): every
   approval is verified in a VERIFY frame. The price is a validation prefix above EIP-8141's 100k, so the vault
-  needs an ERC-8421 mempool with [BUDGET-010] and a stake; the deployed workshop gateway does not have it yet.
+  needs an ERC-8421 mempool with [BUDGET-010] (or no combined cap) and a stake; the stock workshop sidecar image
+  does not have it (`infra/sidecar-budget010/` adds it). Mempools with the combined cap use the §8.2 fallback.
 - **Model scope.** Simulator magnitudes depend on scenario parameters (backup age 10, rollback depth 3, …);
   the qualitative ordering is what we claim. SIGKILL tests process crashes, not power loss (unsynced page
   cache survives SIGKILL); power loss is modelled, not measured. No hardware secure element was tested.
@@ -448,7 +455,9 @@ python3.12 research/run_experiments.py --seeds 20              # ~10 min -> resu
 python3.12 research/sweeps.py --seeds 10                       # -> results/sweeps.{json,md}
 python3.12 research/crash_test.py --kills 100                  # -> results/crash_test.json
 
-# devnet (local; Apple Silicon needs the native ethrex build)
+# devnet, one command (x86; ethrex eip8141-tracer + Lighthouse + skandha [BUDGET-010] sidecar, funded deployer, infra):
+infra/local-net.sh up            # then new-guardians / deploy-vault / transfer below; `up stock` for the stock sidecar
+# devnet by hand (Apple Silicon needs the native ethrex build)
 ./infra/build-ethrex-arm64.sh                                  # or use the published amd64 image on x86
 ETHREX_IMAGE=ethrex:eip8141-tracer-9aa3645d-arm64 ./infra/local-devnet.sh up
 # write .devnet/local/network.json {"ethrex": "<infra/local-devnet.sh rpc>", "sidecar": "http://127.0.0.1:14337/rpc"},

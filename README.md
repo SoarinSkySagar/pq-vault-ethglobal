@@ -27,7 +27,7 @@ Built for ETHGlobal Mumbai 2026. Devnet only — research prototype, not audited
 | Key-loss recovery | `replaceGuardian`: t remaining guardians install new master + slot keys; bumping the guardian epoch revokes every old slot. |
 | Stateful-signature safety (research result) | LeafLedger high-water marks enforced in `VERIFY`, chain-anchored signer, in-flight window, and permissionless **equivocation reports** that revoke a slot that signed two messages with one leaf. |
 | ERC-8421 alt mempool | `VERIFY` reads the shared LeafLedger — storage not associated with the sender, which the EIP-8141 canonical mempool refuses and the alt mempool admits for a **staked** sender; the vault stakes itself in its constructor. |
-| Two-frame fallback (public gateway) | For mempools that cap the whole prefix at EIP-8141's 100k (the deployed workshop gateway): frame 0 `VERIFY` (`self_verify`) → `validateAndCommit()` checks one compact approval that signs *last* over the exact bytes of all the others; frame 1 `SENDER` → `execute()` verifies the other t−1, consumes leaves, runs the batch. Residual cost of this shape only: an invalid later approval wastes the fee (≤ `MAX_TX_COST`) and the committer's leaf. The driver uses it by default on `public` (`--frames 2`). |
+| Two-frame fallback | For mempools that cap the whole prefix at EIP-8141's 100k (e.g. the stock workshop sidecar image `2e22ff0a`): frame 0 `VERIFY` (`self_verify`) → `validateAndCommit()` checks one compact approval that signs *last* over the exact bytes of all the others; frame 1 `SENDER` → `execute()` verifies the other t−1, consumes leaves, runs the batch. Residual cost of this shape only: an invalid later approval wastes the fee (≤ `MAX_TX_COST`) and the committer's leaf. Select it with `--frames 2` (default: 3 frames). |
 | Validation budget (100k cap) | t PQ approvals need ~86k (first compact approval in a frame) + ~68k per further compact approval, so t ≥ 2 exceeds EIP-8141's combined `MAX_VERIFY_GAS` (100k). ERC-8421 `[BUDGET-010]` gives each **staked** entity its own 1,000,000 budget; every validation frame here belongs to the staked vault. The deployed workshop sidecar does not implement `[BUDGET-010]`; `infra/sidecar-budget010/` adds it (patch + 7 tests + image build). |
 
 ## Layout
@@ -58,13 +58,13 @@ python3.12 research/run_experiments.py --seeds 20     # -> research/results/expe
 python3.12 research/crash_test.py --kills 150         # -> research/results/crash_test.json
 
 # devnet: `public` (chain-1337 hackathon devnet) or `local` (Kurtosis: ethrex eip8141-tracer + Lighthouse + sidecar)
-python3.12 -m pqv.devnet local deploy-infra
-infra/sidecar-budget010/build.sh && SIDECAR_IMAGE=pqvault/mempool-sidecar:budget-010 infra/sidecar-local.sh <ethrex-port> <staking>
+infra/local-net.sh up            # Kurtosis ethrex (eip8141-tracer) + Lighthouse + skandha [BUDGET-010] sidecar,
+                                 # funded deployer, infra contracts; waits for Hegota (~10 min). `up stock` = stock sidecar
 python3.12 -m pqv.devnet local new-guardians --n 4
 python3.12 -m pqv.devnet local deploy-vault --threshold 2 --fund 2 --stake 0.02      # t-of-n, staked
 python3.12 -m pqv.devnet local transfer 0x<to> 1000000000000000 --guardians 0,1 [--stateless 1]
 python3.12 -m pqv.devnet local transfer 0x<to> 1000000000000000 --guardians 0,1 --frames 2   # fallback shape
-# on `public` the driver defaults to --frames 2 (the gateway enforces the combined 100k cap)
+infra/local-net.sh status | down
 python3.12 -m pqv.server local       # UI on http://127.0.0.1:8141
 ```
 
@@ -79,8 +79,7 @@ Full local-devnet bring-up (including the native arm64 ethrex build for Apple Si
   (combined 100k cap), and the [BUDGET-010] sidecar rejects an *unstaked* copy. VERIFY frames: 84,596 / 78,720 gas
   (one compact approval each). Billed gas of a 2-of-n transfer: 379,769 (two-frame design: 378,782).
   Receipts: [docs/RECEIPTS-three-frame.md](docs/RECEIPTS-three-frame.md); write-up: REPORT §8.1.
-- **Two-frame fallback, same contract** (REPORT §8.2): with the *stock* workshop sidecar (the image the public
-  gateway runs) 2-of-4, 3-of-4 and compact+stateless transfers, rotation, recovery and the live attack were all
+- **Two-frame fallback, same contract** (REPORT §8.2): with the *stock* workshop sidecar image 2-of-4, 3-of-4 and compact+stateless transfers, rotation, recovery and the live attack were all
   admitted and included on the local devnet; the stock sidecar rejects the three-frame shape. A two-frame 2-of-n
   transfer costs 378,782 gas, the same as the original public-devnet transfers. Receipts:
   [docs/RECEIPTS-two-frame-fallback.md](docs/RECEIPTS-two-frame-fallback.md).
