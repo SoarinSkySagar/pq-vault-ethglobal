@@ -1,0 +1,18 @@
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+libs = []
+solc_version = "0.8.28"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+ffi = false
+allow_paths = ["../third_party"]
+fs_permissions = [{ access = "read", path = "./test/fixtures" }]
+remappings = ["jardin/=../third_party/JARDIN/src/"]
+gas_limit = 100000000
+
+[lint]
+lint_on_build = false

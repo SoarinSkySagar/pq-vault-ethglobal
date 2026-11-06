@@ -1,0 +1,490 @@
+"""PQ-Vault devnet driver: deploy infrastructure, create guardians and a vault, send 2-of-3 frame txs.
+
+    python -m pqv.devnet <network> status
+    python -m pqv.devnet <network> deploy-infra
+    python -m pqv.devnet <network> new-guardians
+    python -m pqv.devnet <network> deploy-vault [--fund ETH] [--stake ETH]
+    python -m pqv.devnet <network> transfer <to> <wei> [--guardians 0,1] [--second stateless]
+
+<network> is `public` (chain-1337 alt-mempool devnet) or `local` (infra/local-devnet.sh, Kurtosis).
+ECDSA appears in exactly one place: the throwaway deployer EOA (.devnet/deployer.json) that publishes
+contracts with ordinary transactions. The vault itself has no ECDSA code path.
+State and keys live in .devnet/ (gitignored). Devnet only - never point this at a real network.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+from . import frametx as ft
+from . import rpc
+from .hashing import ROOT, keccak256
+from .jardin import CompactSlot, GuardianKeys, compact_entry, first_message, stateless_entry, vault_message
+from .state import AnchoredLeafStore, DurableLeafStore
+
+DEVNET_DIR = os.path.join(ROOT, ".devnet")
+OUT = os.path.join(ROOT, "contracts", "out")
+SOLC = os.path.expanduser("~/Library/Application Support/svm/0.8.28/solc-0.8.28")
+PUBLIC = {"ethrex": "https://altmempool.forshtat.com", "sidecar": "https://altmempoolgateway.forshtat.com/rpc",
+          "staking": "0xd51c04d7a0b01124e84de152f4e56d9eecb22d2f", "explorer": "https://explorer.altmempool.wtf"}
+VERIFY_GAS = 99_800  # validation prefix: VERIFY limit + 2 x 100 (ARBITRARY entries) <= MAX_VERIFY_GAS = 100,000
+MAX_TX_COST_WEI = 5 * 10**16
+SLOT_H = 7
+
+
+# ----------------------------------------------------------------------------- small utils
+def sel(sig: str) -> bytes:
+    return keccak256(sig.encode())[:4]
+
+
+def h(b: bytes) -> str:
+    return "0x" + b.hex()
+
+
+def unhex(s: str) -> bytes:
+    return bytes.fromhex(s[2:] if s.startswith("0x") else s)
+
+
+def cast(*args) -> str:
+    r = subprocess.run(["cast", *args], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"cast {args[0]} failed: {re.sub(r'0x[0-9a-fA-F]{64}', '<hex64>', r.stderr.strip())[:1500]}")
+    return r.stdout.strip()
+
+
+class Net:
+    def __init__(self, name: str):
+        self.name = name
+        self.dir = os.path.join(DEVNET_DIR, name)
+        os.makedirs(self.dir, exist_ok=True)
+        cfg_path = os.path.join(self.dir, "network.json")
+        if os.path.exists(cfg_path):
+            self.cfg = json.load(open(cfg_path))
+        elif name == "public":
+            self.cfg = dict(PUBLIC)
+        else:
+            raise SystemExit(f"write {cfg_path} with ethrex/sidecar URLs first (see infra/local-devnet.sh)")
+        rpc.ETHREX_URL, rpc.SIDECAR_URL = self.cfg["ethrex"], self.cfg["sidecar"]
+
+    # files
+    def path(self, f):
+        return os.path.join(self.dir, f)
+
+    def load(self, f, default=None):
+        p = self.path(f)
+        return json.load(open(p)) if os.path.exists(p) else default
+
+    def save(self, f, obj):
+        p = self.path(f)
+        with open(p, "w") as fh:
+            json.dump(obj, fh, indent=1)
+        os.chmod(p, 0o600)
+
+    @property
+    def deployment(self):
+        return self.load("deployment.json", {})
+
+    # chain helpers
+    def deployer_key(self) -> str:
+        d = json.load(open(os.path.join(DEVNET_DIR, "deployer.json")))
+        d = d[0] if isinstance(d, list) else d
+        return d["private_key"]
+
+    def deployer(self) -> str:
+        d = json.load(open(os.path.join(DEVNET_DIR, "deployer.json")))
+        return (d[0] if isinstance(d, list) else d)["address"]
+
+    def gas_price(self) -> int:
+        base = int(rpc.eth("eth_getBlockByNumber", ["latest", False])["baseFeePerGas"], 16)
+        return max(2 * base, 10**9)
+
+    def send_legacy(self, to, data_hex, value_wei=0, gas=None) -> dict:
+        args = ["send", "--private-key", self.deployer_key(), "--rpc-url", self.cfg["ethrex"], "--legacy",
+                "--gas-price", str(self.gas_price()), "--json", "--value", str(value_wei)]
+        if gas:
+            args += ["--gas-limit", str(gas)]
+        args += ["--create", data_hex] if to is None else [to, data_hex]
+        r = json.loads(cast(*args))
+        if r.get("status") not in ("0x1", 1, "1"):
+            raise RuntimeError(f"tx {r.get('transactionHash')} reverted")
+        return r
+
+    def call(self, to: str, data: bytes) -> bytes:
+        return unhex(rpc.eth("eth_call", [{"to": to, "data": h(data)}, "latest"]))
+
+    def ledger_hwm(self, slot_id: bytes) -> int:
+        led = self.deployment.get("ledger")
+        if not led:
+            return 0
+        return int.from_bytes(self.call(led, sel("hwm(bytes32)") + slot_id), "big")
+
+
+def artifact(name: str, sol: str = None) -> str:
+    p = os.path.join(OUT, f"{sol or name}.sol", f"{name}.json")
+    return json.load(open(p))["bytecode"]["object"]
+
+
+def frameops_initcode() -> str:
+    """Compiled without the optimizer, like @forshtat/hegota-support's helpers: the bytecode maps 1:1
+    onto the verbatim opcode sequence that was reviewed against ethrex's stack order."""
+    src = os.path.join(ROOT, "contracts", "src", "PQVaultFrameOps.yul")
+    out = subprocess.run([SOLC, "--strict-assembly", "--evm-version", "cancun", "--bin", src],
+                         capture_output=True, text=True, check=True).stdout
+    return "0x" + out.split("Binary representation:")[1].split()[0]
+
+
+# ----------------------------------------------------------------------------- commands
+def deploy_infra(net: Net):
+    dep = net.deployment
+    def create(label, initcode, ctor_sig=None, *ctor_args):
+        if dep.get(label):
+            print(f"  {label}: {dep[label]} (exists)")
+            return dep[label]
+        code = initcode
+        if ctor_sig:
+            code += cast("abi-encode", ctor_sig, *ctor_args)[2:]
+        r = net.send_legacy(None, code)
+        dep[label] = r["contractAddress"]
+        dep.setdefault("txs", {})[label] = r["transactionHash"]
+        net.save("deployment.json", dep)
+        print(f"  {label}: {dep[label]}  tx {r['transactionHash']}  gas {int(r['gasUsed'], 16)}")
+        return dep[label]
+
+    staking = net.cfg.get("staking") or create("staking", artifact("NaiveStakingRegistry"))
+    dep["staking"] = staking
+    fo = create("frameOps", frameops_initcode())
+    fors = create("forsVerifier", artifact("JardinForsPlainVerifier"))
+    spx = create("spxVerifier", artifact("JardinSpxVerifier"))
+    fac = create("factory", artifact("PQVaultFactory"), "constructor(address,address,address,address)", fo, fors, spx, staking)
+    dep["ledger"] = "0x" + net.call(fac, sel("ledger()"))[-20:].hex()
+    net.save("deployment.json", dep)
+    print(f"  ledger: {dep['ledger']}")
+
+
+def new_guardians(net: Net):
+    if net.load("guardians.json"):
+        raise SystemExit("guardians.json exists; refusing to overwrite keys")
+    gs = [{"index": i, "master_sk": h(os.urandom(32)), "slots": [{"r": h(os.urandom(32)), "h": SLOT_H}]}
+          for i in range(3)]
+    net.save("guardians.json", gs)
+    print("created 3 guardians (secret keys in .devnet/%s/guardians.json)" % net.name)
+
+
+class Guardian:
+    def __init__(self, net: Net, rec: dict, prefix: str = "guardian", anchored: bool = True):
+        self.net, self.rec, self.i = net, rec, rec["index"]
+        self.keys = GuardianKeys(self.i, unhex(rec["master_sk"]))
+        self._spx = None
+        self._slots = {}
+        path = net.path(f"{prefix}-{self.i}-leaves.json")
+        # PQ-Vault guardians use the anchored store; the baseline (attack demo) uses JARDIN-style burn-before-sign only.
+        self.leaves = AnchoredLeafStore(path, net.ledger_hwm) if anchored else DurableLeafStore(path)
+
+    @property
+    def spx(self):
+        if self._spx is None:
+            self._spx = self.keys.spx()
+        return self._spx
+
+    def slot(self, k=-1) -> CompactSlot:
+        s = self.rec["slots"][k]
+        if s["r"] not in self._slots:
+            self._slots[s["r"]] = CompactSlot(self.keys.master_sk, unhex(s["r"]), s["h"])
+        return self._slots[s["r"]]
+
+    def sign_compact(self, msg: bytes) -> bytes:
+        slot = self.slot()
+        q = self.leaves.reserve(slot.slot_id, slot.q_max)  # burned (fsync) before the signature exists
+        return compact_entry(self.i, slot, slot.sign(msg, q))
+
+    def sign_stateless(self, msg: bytes) -> bytes:
+        return stateless_entry(self.i, self.spx.sign(msg))
+
+
+def guardians(net: Net, file: str = "guardians.json", prefix: str = "guardian", anchored: bool = True):
+    gs = net.load(file)
+    if not gs:
+        raise SystemExit(f"run new-guardians first ({file})")
+    return [Guardian(net, g, prefix, anchored) for g in gs]
+
+
+def deploy_vault(net: Net, fund_eth: float, stake_eth: float, use_ledger: bool = True, label: str = "vault",
+                 gs=None):
+    dep = net.deployment
+    if dep.get(label):
+        print(f"{label} exists: {dep[label]}")
+        return
+    gs = gs or guardians(net)
+    g_tuple = ",".join(f"({h(g.spx.public[0])},{h(g.spx.public[1])})" for g in gs)
+    seeds = ",".join(h(g.slot().seed16) for g in gs)
+    roots = ",".join(h(g.slot().root16) for g in gs)
+    init = f"([{g_tuple}],[{seeds}],[{roots}],{MAX_TX_COST_WEI},0)"
+    salt = h(os.urandom(32))
+    stake = int(stake_eth * 10**18)
+    data = cast("calldata", "deploy(bytes32,((bytes32,bytes32)[3],bytes16[3],bytes16[3],uint256,uint32),bool,uint256)",
+                salt, init, "true" if use_ledger else "false", str(stake))
+    value = int(fund_eth * 10**18) + stake
+    est = int(rpc.eth("eth_estimateGas", [{"from": net.deployer(), "to": dep["factory"], "data": data,
+                                           "value": hex(value)}]), 16)
+    r = net.send_legacy(dep["factory"], data, value, gas=int(est * 1.3))
+    topic = "0x" + keccak256(b"VaultDeployed(address,bytes32,bool)").hex()
+    addr = next("0x" + l["topics"][1][-40:] for l in r["logs"] if l["topics"][0] == topic)
+    dep[label] = addr
+    dep.setdefault("txs", {})[label] = r["transactionHash"]
+    net.save("deployment.json", dep)
+    print(f"{label}: {addr}  tx {r['transactionHash']}  ledger={use_ledger} stake={stake_eth} ETH")
+
+
+def execute_calldata(calls) -> bytes:
+    arr = "[" + ",".join(f"({to},{val},{data})" for to, val, data in calls) + "]"
+    return unhex(cast("calldata", "execute((address,uint256,bytes)[])", arr))
+
+
+def build_vault_tx(net: Net, vault: str, calls, exec_gas=900_000, state_gas=400_000) -> ft.FrameTx:
+    nonce = int(rpc.eth("eth_getTransactionCount", [vault, "latest"]), 16)
+    chain_id = int(rpc.eth("eth_chainId"), 16)
+    base = int(rpc.eth("eth_getBlockByNumber", ["latest", False])["baseFeePerGas"], 16)
+    max_fee = max(4 * base, 2 * 10**9)
+    return ft.FrameTx(
+        sender=unhex(vault), nonce_seq=nonce,
+        frames=[ft.Frame(ft.MODE_VERIFY, ft.SCOPE_EXECUTION_AND_PAYMENT, None, VERIFY_GAS, 0, 0, sel("validate()")),
+                ft.Frame(ft.MODE_SENDER, 0, unhex(vault), exec_gas, state_gas, 0, execute_calldata(calls))],
+        signatures=[ft.Signature(ft.SCHEME_ARBITRARY), ft.Signature(ft.SCHEME_ARBITRARY)],
+        max_priority_fee=10**9, max_fee=max_fee, chain_id=chain_id)
+
+
+def sign_vault_tx(tx: ft.FrameTx, g_a: Guardian, g_b: Guardian, second: str = "compact"):
+    sh = tx.sig_hash()  # empty-msg ARBITRARY bytes are elided, so adding them does not change the hash
+    # B signs first; A's message commits to B's exact entry bytes (PQVault.firstMessageFor).
+    e1 = g_b.sign_compact(vault_message(sh)) if second == "compact" else g_b.sign_stateless(vault_message(sh))
+    tx.signatures[1].signature = e1
+    tx.signatures[0].signature = g_a.sign_compact(first_message(sh, e1))
+    assert tx.sig_hash() == sh
+    return sh
+
+
+def simulate(tx: ft.FrameTx, trace=False) -> dict:
+    return rpc.eth("ethrex_simulateFrameTransaction", [h(tx.raw()), "latest", {"trace": trace}])
+
+
+def submit(net: Net, tx: ft.FrameTx, wait=True) -> dict:
+    tx_hash = rpc.sidecar("eth_sendFrameTransaction", [tx.to_wire()])
+    out = {"txHash": tx_hash, "submittedVia": net.cfg["sidecar"]}
+    if not wait:
+        return out
+    end = time.time() + 180
+    while time.time() < end:
+        try:
+            st = rpc.sidecar("skandha_frameTransactionStatus", [tx_hash])
+            out["sidecarStatus"] = st.get("status")
+        except rpc.RpcError:
+            pass
+        rc = rpc.eth("eth_getTransactionReceipt", [tx_hash])
+        if rc:
+            out["receipt"] = rc
+            return out
+        time.sleep(2)
+    raise TimeoutError(f"{tx_hash} not mined: {out}")
+
+
+def record_receipt(net: Net, label: str, out: dict, extra=None):
+    recs = net.load("receipts.json", [])
+    rc = out.get("receipt", {})
+    recs.append({"label": label, "txHash": out["txHash"], "block": int(rc.get("blockNumber", "0x0"), 16),
+                 "status": rc.get("status"), "gasUsed": int(rc.get("gasUsed", "0x0"), 16),
+                 "frameReceipts": rc.get("frameReceipts"), "submittedVia": out.get("submittedVia"),
+                 "sidecarStatus": out.get("sidecarStatus"), "network": net.name, "time": int(time.time()),
+                 **(extra or {})})
+    net.save("receipts.json", recs)
+
+
+def vault_call(net: Net, calls, pair=(0, 1), second="compact", label="vault call", gs=None, vault_label="vault"):
+    """Build, 2-of-3 sign, simulate, submit and record one vault frame transaction."""
+    gs = gs or guardians(net)
+    vault = net.deployment[vault_label]
+    tx = build_vault_tx(net, vault, calls)
+    sh = sign_vault_tx(tx, gs[pair[0]], gs[pair[1]], second)
+    sim = simulate(tx)
+    # `valid`/`violation` are ethrex's *canonical* (EIP-8141 public mempool) verdict. PQ-Vault's VERIFY frame
+    # reads the shared LeafLedger, so it is expected to be canonically invalid and admitted by the ERC-8421
+    # alt mempool (staked sender); what must hold is that full execution succeeds.
+    brief = {k: sim.get(k) for k in ("valid", "prefixShape", "violation", "canonicalMempoolViolation", "executionStatus",
+                                     "gasUsed", "frames", "executionError", "failedFrameIndex", "haltReason", "revertData")}
+    print("simulate:", json.dumps(brief))
+    if sim.get("executionStatus") not in (None, "success"):
+        raise RuntimeError(f"simulated execution failed: {brief}")
+    out = submit(net, tx)
+    rc = out["receipt"]
+    print(f"{label}: tx {out['txHash']} status {rc['status']} block {int(rc['blockNumber'], 16)} "
+          f"gasUsed {int(rc['gasUsed'], 16)}")
+    record_receipt(net, label, out, {"sigHash": h(sh), "guardians": list(pair), "second": second,
+                                     "simulation": brief, "vault": vault})
+    return out
+
+
+def cmd_transfer(net: Net, to: str, wei: int, pair=(0, 1), second="compact", label=None):
+    return vault_call(net, [(to, wei, "0x")], pair, second, label or f"transfer g{pair[0]}+g{pair[1]}({second})")
+
+
+def cmd_rotate(net: Net, g: int, pair=None):
+    """Key rotation: guardian g gets a fresh compact slot (new random r); the old slot is revoked."""
+    gs = guardians(net)
+    pair = pair or tuple(x for x in range(3) if x != g)[:2]
+    old = gs[g].slot()
+    rec = net.load("guardians.json")
+    new_r = h(os.urandom(32))
+    new_slot = CompactSlot(gs[g].keys.master_sk, unhex(new_r), SLOT_H)
+    vault = net.deployment["vault"]
+    calls = [(vault, 0, cast("calldata", "registerSlot(uint8,bytes16,bytes16)", str(g), h(new_slot.seed16), h(new_slot.root16))),
+             (vault, 0, cast("calldata", "revokeSlot(bytes32)", h(old.slot_id)))]
+    out = vault_call(net, calls, pair, label=f"rotate guardian {g} slot (approved by g{pair[0]}+g{pair[1]})", gs=gs)
+    rec[g]["slots"].append({"r": new_r, "h": SLOT_H})
+    net.save("guardians.json", rec)
+    return out
+
+
+def cmd_recover(net: Net, lost: int):
+    """Key-loss recovery: the two other guardians install new master + slot keys for `lost`."""
+    gs = guardians(net)
+    pair = tuple(x for x in range(3) if x != lost)
+    new_master = os.urandom(32)
+    nk = GuardianKeys(lost, new_master)
+    spx = nk.spx()
+    new_r = os.urandom(32)
+    slot = CompactSlot(new_master, new_r, SLOT_H)
+    vault = net.deployment["vault"]
+    data = cast("calldata", "replaceGuardian(uint8,(bytes32,bytes32),bytes16,bytes16)", str(lost),
+                f"({h(spx.public[0])},{h(spx.public[1])})", h(slot.seed16), h(slot.root16))
+    out = vault_call(net, [(vault, 0, data)], pair, label=f"recover lost guardian {lost} (approved by g{pair[0]}+g{pair[1]})", gs=gs)
+    rec = net.load("guardians.json")
+    rec[lost] = {"index": lost, "master_sk": h(new_master), "slots": [{"r": h(new_r), "h": SLOT_H}],
+                 "replaced": rec[lost].get("replaced", 0) + 1}
+    net.save("guardians.json", rec)
+    for f in (f"guardian-{lost}-leaves.json",):
+        if os.path.exists(net.path(f)):
+            os.replace(net.path(f), net.path(f + ".lost-device"))
+    return out
+
+
+# ----------------------------------------------------------------------------- research: live attack on controlled test wallets
+def cmd_attack_stale_restore(net: Net):
+    """Outdated-backup restoration against our own devnet test wallets.
+
+    Baseline: a vault without leaf tracking (JARDIN behaviour) and guardians using burn-before-sign only.
+    Guardian 0 signs tx1 at leaf q; its device is then restored from a backup taken before that signature;
+    it signs tx2 at the *same* leaf q. We show (1) the baseline vault includes both, (2) a watcher turns the
+    two public signatures into an equivocation proof that revokes the slot in the LeafLedger, and (3) the
+    same restored signer cannot get a reused leaf past PQ-Vault's VERIFY frame.
+    """
+    import shutil
+    report = {}
+    if not net.load("baseline-guardians.json"):
+        net.save("baseline-guardians.json", [{"index": i, "master_sk": h(os.urandom(32)),
+                                               "slots": [{"r": h(os.urandom(32)), "h": SLOT_H}]} for i in range(3)])
+    bgs = guardians(net, "baseline-guardians.json", "baseline-guardian", anchored=False)
+    deploy_vault(net, 0.05, 0.02, use_ledger=False, label="baselineVault", gs=bgs)
+    g0 = bgs[0]
+    leaf_file = g0.leaves.path
+    backup = leaf_file + ".backup"
+    shutil.copyfile(leaf_file, backup)  # the backup the device will later be restored from
+    to = net.deployer()
+    out1 = vault_call(net, [(to, 1, "0x")], (0, 1), label="baseline vault: tx1 (guardian 0, leaf q)", gs=bgs,
+                      vault_label="baselineVault")
+    q1 = out1["receipt"] and parse_q(net, out1["txHash"])
+    shutil.copyfile(backup, leaf_file)  # silent restore of the outdated backup
+    out2 = vault_call(net, [(to, 2, "0x")], (0, 2), label="baseline vault: tx2 after stale restore (guardian 0, SAME leaf)",
+                      gs=bgs, vault_label="baselineVault")
+    q2 = parse_q(net, out2["txHash"])
+    report["baseline"] = {"tx1": out1["txHash"], "tx2": out2["txHash"], "leaf_tx1": q1, "leaf_tx2": q2,
+                          "both_included": out1["receipt"]["status"] == "0x1" and out2["receipt"]["status"] == "0x1"}
+    # (2) permissionless equivocation report from the two public transactions
+    e_a, m_a = entry0_and_message(net, out1["txHash"])
+    e_b, m_b = entry0_and_message(net, out2["txHash"])
+    slot = g0.slot()
+    data = cast("calldata", "reportEquivocation(bytes16,bytes16,bytes32,bytes,bytes32,bytes)", h(slot.seed16), h(slot.root16),
+                h(m_a), h(e_a[34:]), h(m_b), h(e_b[34:]))
+    r = net.send_legacy(net.deployment["ledger"], data, gas=1_000_000)
+    report["equivocationReport"] = {"tx": r["transactionHash"], "status": r["status"],
+                                    "slotRevoked": net.ledger_hwm(slot.slot_id) >= 2**255}
+    recs = net.load("receipts.json", [])
+    recs.append({"label": "watcher: equivocation proof revokes the reused slot (LeafLedger.reportEquivocation)",
+                 "txHash": r["transactionHash"], "block": int(r["blockNumber"], 16), "status": r["status"],
+                 "gasUsed": int(r["gasUsed"], 16), "network": net.name, "time": int(time.time()), "legacyTx": True})
+    net.save("receipts.json", recs)
+    # (3) the same stale signer against PQ-Vault
+    gs = guardians(net)
+    pg = gs[0]
+    pslot = pg.slot()
+    hwm = net.ledger_hwm(pslot.slot_id)
+    if hwm >= 1:
+        tx = build_vault_tx(net, net.deployment["vault"], [(to, 3, "0x")])
+        sh = tx.sig_hash()
+        e1 = gs[1].sign_compact(vault_message(sh))
+        tx.signatures[1].signature = e1
+        tx.signatures[0].signature = compact_entry(0, pslot, pslot.sign(first_message(sh, e1), hwm))  # reused leaf
+        sim = simulate(tx)
+        try:
+            rpc.sidecar("eth_sendFrameTransaction", [tx.to_wire()])
+            admitted = "ADMITTED (unexpected)"
+        except rpc.RpcError as e:
+            admitted = f"rejected: {json.dumps(e.error)[:300]}"
+        report["pqVault"] = {"reusedLeaf": hwm, "simulation": {k: sim.get(k) for k in ("valid", "violation", "executionError")},
+                             "altMempool": admitted}
+    net.save("attack-stale-restore.json", report)
+    print(json.dumps(report, indent=1))
+    return report
+
+
+def raw_tx(net: Net, tx_hash: str) -> ft.FrameTx:
+    raw = rpc.eth("debug_getRawTransaction", [tx_hash])
+    return ft.decode_raw(unhex(raw))
+
+
+def entry0_and_message(net: Net, tx_hash: str):
+    """From an included vault transaction (public data): guardian A's entry and the message it signed."""
+    tx = raw_tx(net, tx_hash)
+    e0, e1 = tx.signatures[0].signature, tx.signatures[1].signature
+    return e0, first_message(tx.sig_hash(), e1)
+
+
+def parse_q(net: Net, tx_hash: str) -> int:
+    e0, _ = entry0_and_message(net, tx_hash)
+    return e0[34 + 2592]
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("network", choices=["public", "local"])
+    ap.add_argument("cmd")
+    ap.add_argument("args", nargs="*")
+    ap.add_argument("--fund", type=float, default=0.3)
+    ap.add_argument("--stake", type=float, default=0.02)
+    ap.add_argument("--guardians", default="0,1")
+    ap.add_argument("--second", default="compact", choices=["compact", "stateless"])
+    a = ap.parse_args(argv)
+    net = Net(a.network)
+    if a.cmd == "status":
+        print(json.dumps({"head": int(rpc.eth("eth_blockNumber"), 16), "deployment": net.deployment}, indent=1))
+    elif a.cmd == "deploy-infra":
+        deploy_infra(net)
+    elif a.cmd == "new-guardians":
+        new_guardians(net)
+    elif a.cmd == "deploy-vault":
+        deploy_vault(net, a.fund, a.stake)
+    elif a.cmd == "transfer":
+        cmd_transfer(net, a.args[0], int(a.args[1]), tuple(int(x) for x in a.guardians.split(",")), a.second)
+    elif a.cmd == "rotate":
+        cmd_rotate(net, int(a.args[0]))
+    elif a.cmd == "recover":
+        cmd_recover(net, int(a.args[0]))
+    elif a.cmd == "attack-stale-restore":
+        cmd_attack_stale_restore(net)
+    else:
+        sys.exit(f"unknown command {a.cmd}")
+
+
+if __name__ == "__main__":
+    main()

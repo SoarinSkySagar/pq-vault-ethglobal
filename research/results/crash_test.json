@@ -1,0 +1,62 @@
+[
+ {
+  "policy": "naive",
+  "mode": "random",
+  "kills": 100,
+  "released_signatures": 911,
+  "leaves_used": 355,
+  "reused_leaves": 272,
+  "max_gamma": 5,
+  "runtime_s": 40.0
+ },
+ {
+  "policy": "naive_fsync",
+  "mode": "random",
+  "kills": 100,
+  "released_signatures": 863,
+  "leaves_used": 857,
+  "reused_leaves": 6,
+  "max_gamma": 2,
+  "runtime_s": 39.7
+ },
+ {
+  "policy": "burn",
+  "mode": "random",
+  "kills": 100,
+  "released_signatures": 872,
+  "leaves_used": 872,
+  "reused_leaves": 0,
+  "max_gamma": 1,
+  "runtime_s": 39.2
+ },
+ {
+  "policy": "naive",
+  "mode": "targeted",
+  "kills": 100,
+  "released_signatures": 100,
+  "leaves_used": 1,
+  "reused_leaves": 1,
+  "max_gamma": 100,
+  "runtime_s": 36.9
+ },
+ {
+  "policy": "naive_fsync",
+  "mode": "targeted",
+  "kills": 100,
+  "released_signatures": 100,
+  "leaves_used": 1,
+  "reused_leaves": 1,
+  "max_gamma": 100,
+  "runtime_s": 36.7
+ },
+ {
+  "policy": "burn",
+  "mode": "targeted",
+  "kills": 100,
+  "released_signatures": 100,
+  "leaves_used": 100,
+  "reused_leaves": 0,
+  "max_gamma": 1,
+  "runtime_s": 37.5
+ }
+]

@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PQ-Vault — 2-of-3 post-quantum guardian wallet</title>
+<style>
+  :root { --bg:#0e1116; --panel:#161b22; --line:#2a313c; --text:#e6edf3; --muted:#8b949e; --ok:#3fb950; --bad:#f85149; --acc:#7aa2f7; --warn:#d29922; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; align-items:baseline; gap:16px; padding:18px 24px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { margin:0; font-size:20px; }
+  header .sub { color:var(--muted); }
+  .badge { padding:2px 8px; border:1px solid var(--line); border-radius:999px; font-size:12px; color:var(--muted); }
+  main { display:grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap:16px; padding:16px 24px 40px; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  section h2 { margin:0 0 10px; font-size:15px; }
+  .wide { grid-column: 1 / -1; }
+  .kv { display:grid; grid-template-columns: 150px 1fr; gap:4px 10px; }
+  .kv div:nth-child(odd) { color:var(--muted); }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12.5px; word-break: break-all; }
+  .guardians { display:grid; grid-template-columns: repeat(3, 1fr); gap:10px; }
+  .g { border:1px solid var(--line); border-radius:8px; padding:10px; }
+  .g h3 { margin:0 0 6px; font-size:14px; display:flex; justify-content:space-between; }
+  .bar { height:6px; background:#222a35; border-radius:4px; overflow:hidden; margin:6px 0; }
+  .bar > span { display:block; height:100%; background:var(--acc); }
+  .ok { color:var(--ok); } .bad { color:var(--bad); } .muted { color:var(--muted); } .warn { color: var(--warn); }
+  label { display:block; color:var(--muted); margin:8px 0 3px; font-size:12px; }
+  input, select { width:100%; padding:7px 9px; background:#0d1117; color:var(--text); border:1px solid var(--line); border-radius:6px; }
+  button { margin-top:10px; padding:7px 12px; background:#21262d; color:var(--text); border:1px solid var(--line); border-radius:6px; cursor:pointer; }
+  button.primary { background:#1f6feb; border-color:#1f6feb; }
+  button:disabled { opacity:.5; cursor:wait; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:500; }
+  a { color: var(--acc); text-decoration: none; } a:hover { text-decoration: underline; }
+  pre { background:#0d1117; border:1px solid var(--line); border-radius:6px; padding:8px; overflow:auto; max-height:260px; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PQ-Vault</h1>
+  <span class="sub">2-of-3 post-quantum guardian wallet · EIP-8141 frame transactions · ERC-8421 alt mempool · JARDIN hash-based signatures · no ECDSA</span>
+  <span class="badge" id="net">…</span>
+  <span class="badge" id="head">…</span>
+</header>
+<main>
+  <section>
+    <h2>Vault</h2>
+    <div class="kv" id="vault"></div>
+  </section>
+
+  <section>
+    <h2>Send (needs 2 guardians)</h2>
+    <label>Recipient</label><input id="to" placeholder="0x…">
+    <label>Amount (ETH, devnet)</label><input id="amt" value="0.001">
+    <div class="row">
+      <div style="flex:1"><label>Approving guardians</label>
+        <select id="pair"><option value="0,1">0 + 1</option><option value="0,2">0 + 2</option><option value="1,2">1 + 2</option></select></div>
+      <div style="flex:1"><label>Second approval</label>
+        <select id="second"><option value="compact">compact (stateful JARDIN FORS, 2.7 KB)</option><option value="stateless">stateless (JARDIN SPX, 6.5 KB)</option></select></div>
+    </div>
+    <button class="primary" id="send">Sign with 2 guardians &amp; send via alt mempool</button>
+    <div id="sendOut" class="muted" style="margin-top:8px"></div>
+  </section>
+
+  <section class="wide">
+    <h2>Guardians — stateful signing state vs. chain-anchored high-water mark</h2>
+    <div class="guardians" id="guardians"></div>
+    <pre id="actionOut" style="display:none"></pre>
+  </section>
+
+  <section class="wide">
+    <h2>Activity (devnet receipts)</h2>
+    <table><thead><tr><th>action</th><th>tx</th><th>block</th><th>status</th><th>gas</th><th>frames</th></tr></thead><tbody id="rcpts"></tbody></table>
+  </section>
+
+  <section class="wide">
+    <h2>Research: does a stateful PQ wallet survive crashes, stale backups, clones and rollback?</h2>
+    <div class="muted" style="margin-bottom:6px">Real JARDIN signatures under scripted faults (research/run_experiments.py). Worst case over seeds. γ = most messages signed by one few-time leaf; exposure = blocks during which a reused leaf was still accepted on chain.</div>
+    <table><thead><tr><th>scenario</th><th>signer / chain</th><th>worst γ</th><th>lowest forgery cost (bits)</th><th>double-accepted on chain</th><th>exposure blocks (mean)</th><th>refusals (mean)</th><th>re-slots (mean)</th></tr></thead><tbody id="research"></tbody></table>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const short = (h) => h ? h.slice(0, 10) + "…" + h.slice(-6) : "";
+let S = null;
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+
+function txLink(hash) {
+  if (S && S.explorer) return `<a class="mono" target="_blank" rel="noopener" href="${S.explorer}/tx/${hash}">${short(hash)}</a>`;
+  return `<span class="mono" title="${hash}">${short(hash)}</span>`;
+}
+
+async function refresh() {
+  try { S = await api("/api/status"); } catch (e) { $("vault").innerHTML = `<div class="bad">${e.message}</div>`; return; }
+  $("net").textContent = `network: ${S.network}`;
+  $("head").textContent = `block ${S.head}`;
+  const v = S.vault || {}, d = S.deployment || {};
+  $("vault").innerHTML = `
+    <div>address</div><div class="mono">${v.address || "not deployed"}</div>
+    <div>balance</div><div>${v.balanceWei ? (Number(v.balanceWei) / 1e18).toFixed(6) + " ETH" : "-"}</div>
+    <div>nonce</div><div>${v.nonce ?? "-"}</div>
+    <div>LeafLedger</div><div class="mono">${d.ledger || "-"}</div>
+    <div>JARDIN FORS / SPX</div><div class="mono">${short(d.forsVerifier)} / ${short(d.spxVerifier)}</div>
+    <div>staking registry</div><div class="mono">${d.staking || "-"}</div>
+    <div>tx submitted to</div><div class="mono">${S.mempool}</div>`;
+  $("guardians").innerHTML = S.guardians.map(g => {
+    const used = g.ledgerHighWaterMark === "revoked" ? g.qMax : g.ledgerHighWaterMark;
+    return `<div class="g">
+      <h3><span>Guardian ${g.index}</span><span class="${g.activeInVault ? "ok" : "bad"}">${g.activeInVault ? "active" : "inactive"}</span></h3>
+      <div class="muted">compact slot <span class="mono">${short(g.slotId)}</span> (#${g.slotCount}${g.replaced ? `, replaced ×${g.replaced}` : ""})</div>
+      <div class="bar"><span style="width:${(100 * used / g.qMax).toFixed(1)}%"></span></div>
+      <div>next leaf on device: <b>${g.nextLeafLocal}</b> / ${g.qMax}</div>
+      <div>chain high-water mark: <b class="${g.ledgerHighWaterMark === "revoked" ? "bad" : ""}">${g.ledgerHighWaterMark}</b></div>
+      <div class="row">
+        <button onclick="act('/api/rotate', {guardian:${g.index}})">Rotate slot</button>
+        <button onclick="act('/api/recover', {lost:${g.index}})">Lost device → recover</button>
+        <button onclick="act('/api/demo/stale-restore', {guardian:${g.index}})">Restore stale backup</button>
+      </div></div>`;
+  }).join("");
+  $("rcpts").innerHTML = (S.receipts || []).map(r => `<tr>
+      <td>${r.label}</td><td>${txLink(r.txHash)}</td><td>${r.block}</td>
+      <td class="${r.status === "0x1" ? "ok" : "bad"}">${r.status === "0x1" ? "success" : r.status}</td>
+      <td>${r.gasUsed}</td>
+      <td>${(r.frameReceipts || []).map((f, i) => `${i ? "SENDER" : "VERIFY"}:${f.status === "0x1" || f.status === 1 ? "ok" : f.status}`).join(" ")}</td></tr>`).join("") || `<tr><td colspan=6 class="muted">no transactions yet</td></tr>`;
+}
+
+async function act(path, body) {
+  const out = $("actionOut");
+  out.style.display = "block";
+  out.textContent = `running ${path} … (signing with JARDIN keys, simulating, submitting to the alt mempool)`;
+  document.querySelectorAll("button").forEach(b => b.disabled = true);
+  try { out.textContent = JSON.stringify(await api(path, body), null, 1); }
+  catch (e) { out.textContent = "error: " + e.message; }
+  document.querySelectorAll("button").forEach(b => b.disabled = false);
+  refresh();
+}
+
+$("send").onclick = async () => {
+  const wei = BigInt(Math.round(parseFloat($("amt").value) * 1e9)) * 1000000000n;
+  $("sendOut").textContent = "signing (guardian A: compact; guardian B: " + $("second").value + "), simulating, submitting…";
+  $("send").disabled = true;
+  try {
+    const r = await api("/api/transfer", { to: $("to").value.trim(), wei: wei.toString(), pair: $("pair").value.split(",").map(Number), second: $("second").value });
+    $("sendOut").innerHTML = `included in block ${parseInt(r.receipt.blockNumber, 16)} — ${txLink(r.txHash)} — status <span class="${r.receipt.status === "0x1" ? "ok" : "bad"}">${r.receipt.status}</span>`;
+  } catch (e) { $("sendOut").innerHTML = `<span class="bad">${e.message}</span>`; }
+  $("send").disabled = false;
+  refresh();
+};
+
+async function research() {
+  try {
+    const R = await api("/api/research");
+    const pick = [["durable", false, "JARDIN-style burn-before-sign, no on-chain state"], ["durable", true, "same + LeafLedger"],
+                  ["anchored_w1", true, "PQ-Vault: anchored signer + LeafLedger"], ["anchored_w1", "revoke", "PQ-Vault + equivocation revocation"]];
+    $("research").innerHTML = R.rows.filter(r => pick.some(p => p[0] === r.policy && p[1] === r.ledger)).map(r => {
+      const lab = pick.find(p => p[0] === r.policy && p[1] === r.ledger)[2];
+      return `<tr><td>${r.scenario}</td><td>${lab}</td><td class="${r.worst_gamma > 1 ? "warn" : "ok"}">${r.worst_gamma}</td>
+        <td>${r.worst_min_bits}</td><td class="${r.total_double_accepted ? "bad" : "ok"}">${r.total_double_accepted}</td>
+        <td>${r.mean_exposure_steps}</td><td>${r.mean_refused}</td><td>${r.mean_reslots}</td></tr>`;
+    }).join("") || `<tr><td colspan=8 class="muted">run research/run_experiments.py</td></tr>`;
+  } catch (e) {}
+}
+refresh(); research(); setInterval(refresh, 6000);
+</script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+[submodule "third_party/JARDIN"]
+	path = third_party/JARDIN
+	url = https://github.com/nconsigny/JARDIN.git
+[submodule "third_party/SPHINCS-"]
+	path = third_party/SPHINCS-
+	url = https://github.com/nconsigny/SPHINCS-.git

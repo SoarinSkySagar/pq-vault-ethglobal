@@ -1,0 +1,13 @@
+# local reading copies of upstream repos (not redistributed)
+vendor/
+# secrets and per-machine devnet state (throwaway devnet keys, signer state)
+.devnet/
+*.key
+# build output
+contracts/out/
+contracts/cache/
+__pycache__/
+*.pyc
+node_modules/
+research/results/raw/
+demo/build/
