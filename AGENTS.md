@@ -96,6 +96,12 @@ Without the guardian secrets in `.devnet/public/` that vault cannot be operated;
   go in `ARBITRARY` entries. Since the three-frame redesign every entry is verified in a VERIFY frame, so all guardians
   sign the same `messageFor(sigHash)` (domain `PQ-Vault/v2`) in any order; a relayer that corrupts either entry makes
   the tx invalid (no fee). The original design's `firstMessageFor` chaining (REPORT G6) is gone.
+- **Slot refresh** (`pqv/devnet.py`): before signing, `vault_call` rotates any compact approver with
+  `remaining_leaves() <= min(--rotate-at (8), q_max/4)` (counts the local counter *and* the LeafLedger mark; a revoked
+  slot is 0), approved by the other two; an approver with 0 left signs stateless (`effective_kinds`). Rotations run
+  with refresh off (no recursion) and keep the slot height. Rotation is per vault (`vault_label`): other vaults that
+  share the guardian set keep the old slot until rotated there too. `research/slot_refresh_e2e.py` exercises it with
+  4-leaf slots (`new-guardians --slot-h 2`).
 - **Debugging a silently dropped privileged tx**: ethrex logs the payload builder's skip reason only at debug level;
   enable at runtime with `cast rpc --rpc-url <ethrex> admin_setLogLevel '"info,ethrex_blockchain=debug"'` and grep
   `skipping IL tx`. A local reading copy of ethrex @ 9aa3645d can live in `vendor/` (gitignored).

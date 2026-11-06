@@ -341,6 +341,29 @@ fallback for combined-100k mempools (one compact approval in VERIFY committing t
 tested and run on the local network, then removed to keep the vault 2-of-3 with one VERIFY frame per guardian; they
 are in git history (commits `ad291d5`, `1b5507f`).
 
+### 8.2 Slot refresh: 128-leaf slots that never run dry (`research/slot_refresh_e2e.py`, `results/slot_refresh_e2e.json`)
+
+A compact slot holds 2^h one-time leaves (h = 7: 128). The driver refreshes slots automatically: before a guardian
+approves with its compact key, `vault_call` checks `remaining_leaves()` (above both the device's burn-before-sign
+counter and the LeafLedger mark; a revoked slot has 0) and, at ≤ min(8, q_max/4) left, first sends a 2-of-3
+`registerSlot` + `revokeSlot` transaction approved by the other two guardians. A guardian with no compact leaf left
+approves with its stateless SPX key instead (VERIFY admits it: ~292k gas, within the staked budget), so neither a
+transfer nor a rotation can get stuck on exhausted slots. Unit tests: `tests/test_vault_tx.py` (`SlotRefresh`).
+
+End-to-end on the local network with **4-leaf slots** (h = 2) and a separate staked vault, 13 transactions, all
+status 0x1 (blocks 487–499):
+
+| phase | what happened | txs |
+|---|---|---|
+| A (refresh on) | transfers A1–A3 g0+g1; before A4 guardian 0 had 1/4 left → rotated (approved g1+g2); guardian 1 then had 0/4 → rotated (approved g0+g2); A4, A5 on the fresh slots | 7 |
+| B (refresh off) | B1 compact; B2 guardian 0 out of leaves → SPX fallback (prefix 430,200); B3 both out → **two SPX approvals** (prefix 660,200, billed 862,713) | 3 |
+| C | rotate guardian 2 while approver guardian 0 has no compact leaf: it approves with SPX | 1 |
+| D (refresh on) | guardian 1 at 1/4 → rotated automatically (g0 SPX + g2 fresh slot), then the transfer g1+g2 | 2 |
+
+What this does **not** add: a guardian cannot renew its own slot alone with its stateless key (upstream JARDIN's
+registration path); renewal is always approved by the other two guardians, which keeps 2-of-3 control over every key
+change but means renewal needs two available guardians.
+
 ## 9. Limitations and unsuccessful experiments
 
 **Limitations of the mitigation**
@@ -433,6 +456,7 @@ python3.12 -m pqv.devnet local deploy-vault --vault unstakedVault --fund 1 --sta
 python3.12 -m pqv.devnet local transfer <to> 1000000000000000 --guardians 0,1          # after Hegota (epoch 2)
 python3.12 -m pqv.devnet local transfer <to> 2000000000000000 --guardians 1,2 --stateless 2
 python3 -m research.mempool_admission local <tag> [--vault ...] [--guardians ...]      # records node responses
+python3 -m research.slot_refresh_e2e local          # 4-leaf slots: auto rotation + stateless fallback, -> results/
 python3.12 -m pqv.devnet local rotate 0 && python3.12 -m pqv.devnet local recover 2
 python3.12 -m pqv.devnet local attack-stale-restore
 python3.12 -m pqv.receipts local --out docs/RECEIPTS-local.md

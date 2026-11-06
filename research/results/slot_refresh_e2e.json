@@ -1,0 +1,491 @@
+{
+ "network": "local",
+ "chainId": 3151908,
+ "client": "ethrex/v23.0.0-eip8141-tracer-9aa3645d795945c64400f41a70aace0edfa7f383/x86_64-unknown-linux-gnu/rustc-v1.93.1",
+ "vault": "0x14e6447a4dab0fbc9b8420a46bd0729b1f77b259",
+ "slotLeaves": 4,
+ "generated": 1793988560,
+ "summary": {
+  "transactions": 13,
+  "allSucceeded": true,
+  "rotations": 4,
+  "statelessApprovals": 5
+ },
+ "steps": [
+  {
+   "phase": "A1: transfer g0+g1, refresh on",
+   "txs": [
+    {
+     "label": "slot-refresh A1: transfer",
+     "txHash": "0xfca69c2e803a96845467a16eafa723049a88e60355cbe5e71a55db5086af03dc",
+     "block": 487,
+     "status": "0x1",
+     "guardians": [
+      0,
+      1
+     ],
+     "kinds": [
+      "compact",
+      "compact"
+     ],
+     "gasUsed": 565113
+    }
+   ],
+   "after": [
+    {
+     "guardian": 0,
+     "slotNumber": 1,
+     "slotId": "0x48d231ebd1",
+     "qMax": 4,
+     "remaining": 3
+    },
+    {
+     "guardian": 1,
+     "slotNumber": 1,
+     "slotId": "0x129491defa",
+     "qMax": 4,
+     "remaining": 3
+    },
+    {
+     "guardian": 2,
+     "slotNumber": 1,
+     "slotId": "0xbe46c5a38e",
+     "qMax": 4,
+     "remaining": 4
+    }
+   ]
+  },
+  {
+   "phase": "A2: transfer g0+g1, refresh on",
+   "txs": [
+    {
+     "label": "slot-refresh A2: transfer",
+     "txHash": "0x08eacaed312095b0067b15c309704ec0fddcb26273eb60e6c64d192a1a9cc6b2",
+     "block": 488,
+     "status": "0x1",
+     "guardians": [
+      0,
+      1
+     ],
+     "kinds": [
+      "compact",
+      "compact"
+     ],
+     "gasUsed": 369273
+    }
+   ],
+   "after": [
+    {
+     "guardian": 0,
+     "slotNumber": 1,
+     "slotId": "0x48d231ebd1",
+     "qMax": 4,
+     "remaining": 2
+    },
+    {
+     "guardian": 1,
+     "slotNumber": 1,
+     "slotId": "0x129491defa",
+     "qMax": 4,
+     "remaining": 2
+    },
+    {
+     "guardian": 2,
+     "slotNumber": 1,
+     "slotId": "0xbe46c5a38e",
+     "qMax": 4,
+     "remaining": 4
+    }
+   ]
+  },
+  {
+   "phase": "A3: transfer g0+g1, refresh on",
+   "txs": [
+    {
+     "label": "slot-refresh A3: transfer",
+     "txHash": "0x0aca158aaba110e04113c9846867b83d37157007d4a736bfdadf27b4926592ae",
+     "block": 489,
+     "status": "0x1",
+     "guardians": [
+      0,
+      1
+     ],
+     "kinds": [
+      "compact",
+      "compact"
+     ],
+     "gasUsed": 369273
+    }
+   ],
+   "after": [
+    {
+     "guardian": 0,
+     "slotNumber": 1,
+     "slotId": "0x48d231ebd1",
+     "qMax": 4,
+     "remaining": 1
+    },
+    {
+     "guardian": 1,
+     "slotNumber": 1,
+     "slotId": "0x129491defa",
+     "qMax": 4,
+     "remaining": 1
+    },
+    {
+     "guardian": 2,
+     "slotNumber": 1,
+     "slotId": "0xbe46c5a38e",
+     "qMax": 4,
+     "remaining": 4
+    }
+   ]
+  },
+  {
+   "phase": "A4: transfer g0+g1, refresh on",
+   "txs": [
+    {
+     "label": "rotate guardian 0 slot (approved by g1+g2)",
+     "txHash": "0x4edbeccee43497102db743c5fbd9c3bfc5a7728d159ed4ea56b5562d1c68b315",
+     "block": 490,
+     "status": "0x1",
+     "guardians": [
+      1,
+      2
+     ],
+     "kinds": [
+      "compact",
+      "compact"
+     ],
+     "gasUsed": 587641
+    },
+    {
+     "label": "rotate guardian 1 slot (approved by g0+g2)",
+     "txHash": "0x77735e7b062ceeb450ce98ec4d9a76c7c4ef97cfecfde7c7bc0b75076739c0b2",
+     "block": 491,
+     "status": "0x1",
+     "guardians": [
+      0,
+      2
+     ],
+     "kinds": [
+      "compact",
+      "compact"
+     ],
+     "gasUsed": 587641
+    },
+    {
+     "label": "slot-refresh A4: transfer",
+     "txHash": "0x94a554bcae1755943168a875e4ddb10f9e8fecb78c3664632e3ca945f110787d",
+     "block": 492,
+     "status": "0x1",
+     "guardians": [
+      0,
+      1
+     ],
+     "kinds": [
+      "compact",
+      "compact"
+     ],
+     "gasUsed": 467193
+    }
+   ],
+   "after": [
+    {
+     "guardian": 0,
+     "slotNumber": 2,
+     "slotId": "0x7fc160e526",
+     "qMax": 4,
+     "remaining": 2
+    },
+    {
+     "guardian": 1,
+     "slotNumber": 2,
+     "slotId": "0x2574c8c508",
+     "qMax": 4,
+     "remaining": 3
+    },
+    {
+     "guardian": 2,
+     "slotNumber": 1,
+     "slotId": "0xbe46c5a38e",
+     "qMax": 4,
+     "remaining": 2
+    }
+   ]
+  },
+  {
+   "phase": "A5: transfer g0+g1, refresh on",
+   "txs": [
+    {
+     "label": "slot-refresh A5: transfer",
+     "txHash": "0x8d5a449a21c69777e53f0a78fd42fa1a414bddc5f1640b366faa007485089aab",
+     "block": 493,
+     "status": "0x1",
+     "guardians": [
+      0,
+      1
+     ],
+     "kinds": [
+      "compact",
+      "compact"
+     ],
+     "gasUsed": 369273
+    }
+   ],
+   "after": [
+    {
+     "guardian": 0,
+     "slotNumber": 2,
+     "slotId": "0x7fc160e526",
+     "qMax": 4,
+     "remaining": 1
+    },
+    {
+     "guardian": 1,
+     "slotNumber": 2,
+     "slotId": "0x2574c8c508",
+     "qMax": 4,
+     "remaining": 2
+    },
+    {
+     "guardian": 2,
+     "slotNumber": 1,
+     "slotId": "0xbe46c5a38e",
+     "qMax": 4,
+     "remaining": 2
+    }
+   ]
+  },
+  {
+   "phase": "B1: transfer g0+g2, refresh off",
+   "txs": [
+    {
+     "label": "slot-refresh B1: transfer",
+     "txHash": "0x6d02a16e555fa23b61b72216c683cbfaa65b2ca858ea57055ad17672ad8d6453",
+     "block": 494,
+     "status": "0x1",
+     "guardians": [
+      0,
+      2
+     ],
+     "kinds": [
+      "compact",
+      "compact"
+     ],
+     "gasUsed": 369273
+    }
+   ],
+   "after": [
+    {
+     "guardian": 0,
+     "slotNumber": 2,
+     "slotId": "0x7fc160e526",
+     "qMax": 4,
+     "remaining": 0
+    },
+    {
+     "guardian": 1,
+     "slotNumber": 2,
+     "slotId": "0x2574c8c508",
+     "qMax": 4,
+     "remaining": 2
+    },
+    {
+     "guardian": 2,
+     "slotNumber": 1,
+     "slotId": "0xbe46c5a38e",
+     "qMax": 4,
+     "remaining": 1
+    }
+   ]
+  },
+  {
+   "phase": "B2: transfer g0+g2, refresh off",
+   "txs": [
+    {
+     "label": "slot-refresh B2: transfer",
+     "txHash": "0x4f30f1cbaf54103838a18658a2d67c68538ecaa9b5a54b97e558649e3fd3c5cc",
+     "block": 495,
+     "status": "0x1",
+     "guardians": [
+      0,
+      2
+     ],
+     "kinds": [
+      "stateless",
+      "compact"
+     ],
+     "gasUsed": 615993
+    }
+   ],
+   "after": [
+    {
+     "guardian": 0,
+     "slotNumber": 2,
+     "slotId": "0x7fc160e526",
+     "qMax": 4,
+     "remaining": 0
+    },
+    {
+     "guardian": 1,
+     "slotNumber": 2,
+     "slotId": "0x2574c8c508",
+     "qMax": 4,
+     "remaining": 2
+    },
+    {
+     "guardian": 2,
+     "slotNumber": 1,
+     "slotId": "0xbe46c5a38e",
+     "qMax": 4,
+     "remaining": 0
+    }
+   ]
+  },
+  {
+   "phase": "B3: transfer g0+g2, refresh off",
+   "txs": [
+    {
+     "label": "slot-refresh B3: transfer",
+     "txHash": "0x27dd37c61d0f7455f8ea60e252907c294129810cf6536fe73cd1cbeef748967d",
+     "block": 496,
+     "status": "0x1",
+     "guardians": [
+      0,
+      2
+     ],
+     "kinds": [
+      "stateless",
+      "stateless"
+     ],
+     "gasUsed": 862713
+    }
+   ],
+   "after": [
+    {
+     "guardian": 0,
+     "slotNumber": 2,
+     "slotId": "0x7fc160e526",
+     "qMax": 4,
+     "remaining": 0
+    },
+    {
+     "guardian": 1,
+     "slotNumber": 2,
+     "slotId": "0x2574c8c508",
+     "qMax": 4,
+     "remaining": 2
+    },
+    {
+     "guardian": 2,
+     "slotNumber": 1,
+     "slotId": "0xbe46c5a38e",
+     "qMax": 4,
+     "remaining": 0
+    }
+   ]
+  },
+  {
+   "phase": "C: rotate guardian 2 (approver g0 has no compact leaf)",
+   "txs": [
+    {
+     "label": "rotate guardian 2 slot (approved by g0+g1)",
+     "txHash": "0x47f69b28501ec44d3112146e78890230da938dc91155d8eae920e527bdc3619a",
+     "block": 497,
+     "status": "0x1",
+     "guardians": [
+      0,
+      1
+     ],
+     "kinds": [
+      "stateless",
+      "compact"
+     ],
+     "gasUsed": 736441
+    }
+   ],
+   "after": [
+    {
+     "guardian": 0,
+     "slotNumber": 2,
+     "slotId": "0x7fc160e526",
+     "qMax": 4,
+     "remaining": 0
+    },
+    {
+     "guardian": 1,
+     "slotNumber": 2,
+     "slotId": "0x2574c8c508",
+     "qMax": 4,
+     "remaining": 1
+    },
+    {
+     "guardian": 2,
+     "slotNumber": 2,
+     "slotId": "0xb730ea97e0",
+     "qMax": 4,
+     "remaining": 4
+    }
+   ]
+  },
+  {
+   "phase": "D: transfer g1+g2 with g2's fresh slot",
+   "txs": [
+    {
+     "label": "rotate guardian 1 slot (approved by g0+g2)",
+     "txHash": "0x2b49f3db5670afc13da448033454424f4408b935831984a25b88379be0bf81c6",
+     "block": 498,
+     "status": "0x1",
+     "guardians": [
+      0,
+      2
+     ],
+     "kinds": [
+      "stateless",
+      "compact"
+     ],
+     "gasUsed": 834361
+    },
+    {
+     "label": "slot-refresh D: transfer",
+     "txHash": "0x9e3d4c58f71ab6d520569e05e2cd402776a8fd1e4599fb0c052d88a013846591",
+     "block": 499,
+     "status": "0x1",
+     "guardians": [
+      1,
+      2
+     ],
+     "kinds": [
+      "compact",
+      "compact"
+     ],
+     "gasUsed": 467193
+    }
+   ],
+   "after": [
+    {
+     "guardian": 0,
+     "slotNumber": 2,
+     "slotId": "0x7fc160e526",
+     "qMax": 4,
+     "remaining": 0
+    },
+    {
+     "guardian": 1,
+     "slotNumber": 3,
+     "slotId": "0xa566b83e94",
+     "qMax": 4,
+     "remaining": 3
+    },
+    {
+     "guardian": 2,
+     "slotNumber": 2,
+     "slotId": "0xb730ea97e0",
+     "qMax": 4,
+     "remaining": 2
+    }
+   ]
+  }
+ ]
+}

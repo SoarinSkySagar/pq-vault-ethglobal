@@ -26,7 +26,7 @@ def section(name: str) -> str:
              f"- RPC: {net.cfg['ethrex']} · mempool (ERC-8421 sidecar): {net.cfg['sidecar']}",
              f"- generated: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}", "",
              "### Contracts", "", "| contract | address | deploy tx |", "|---|---|---|"]
-    for k in ("frameOps", "forsVerifier", "spxVerifier", "staking", "factory", "ledger", "vault", "baselineVault",
+    for k in ("frameOps", "forsVerifier", "spxVerifier", "staking", "factory", "ledger", "vault", "smallVault", "baselineVault",
               "unstakedVault"):
         if dep.get(k):
             lines.append(f"| {k} | `{dep[k]}` | `{dep.get('txs', {}).get(k, '-')}` |")
