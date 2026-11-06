@@ -6,14 +6,14 @@
     python -m pqv.devnet <network> deploy-vault [--threshold 2] [--fund ETH] [--stake ETH]
     python -m pqv.devnet <network> transfer <to> <wei> [--guardians 0,1] [--stateless 1]
 
-Two transaction shapes (--frames; default 2 on `public`, 3 elsewhere, or "frames" in network.json):
+Two transaction shapes (--frames, or "frames" in network.json; default 3):
   3 frames (ERC-8421 `[only_verify, pay]` prefix + body) — every approval verified before payment:
     frame 0 VERIFY (scope EXECUTION) validate() over approvals [0, k)
     frame 1 VERIFY (scope PAYMENT)   validate() over approvals [k, t)
     frame 2 SENDER execute(calls): consume every approval's leaf, run the batch
     Needs an ERC-8421 mempool with [BUDGET-010] (per-entity budgets, 1M for a staked entity): two or more
     PQ approvals exceed EIP-8141's combined 100k MAX_VERIFY_GAS.
-  2 frames (`[self_verify]` prefix + body) — fallback for mempools with the combined 100k cap (public gateway):
+  2 frames (`[self_verify]` prefix + body) — fallback for mempools with the combined 100k cap (stock workshop sidecar):
     frame 0 VERIFY (scope EXECUTION+PAYMENT) validateAndCommit(): the committer's compact approval, signed
                    last over first_message(sigHash, other entries)
     frame 1 SENDER execute(calls): verify the other t-1 approvals, consume leaves, run the batch
@@ -405,9 +405,9 @@ def approver_plan(gs, approvers, stateless=(), frames=3, committer=None):
 
 
 def net_frames(net) -> int:
-    """Transaction shape for this network: "frames" in network.json, else 2 on the public gateway
-    (combined 100k cap), else 3."""
-    return int(net.cfg.get("frames", 2 if net.name == "public" else 3))
+    """Transaction shape for this network: "frames" in network.json, else 3 (needs an ERC-8421 mempool
+    with [BUDGET-010], e.g. infra/local-net.sh). Use 2 for a mempool that caps the prefix at 100k."""
+    return int(net.cfg.get("frames", 3))
 
 
 def vault_call(net: Net, calls, approvers=(0, 1), stateless=(), label="vault call", gs=None, vault_label="vault",
@@ -603,7 +603,7 @@ def main(argv=None):
     ap.add_argument("--threshold", type=int, default=2, help="deploy-vault: approvals required (t)")
     ap.add_argument("--vault", default="vault", help="deployment label of the vault to use / deploy")
     ap.add_argument("--frames", type=int, choices=[2, 3], default=None,
-                    help="transaction shape (default: 2 on public, 3 elsewhere, or network.json 'frames')")
+                    help="transaction shape (default: network.json 'frames', else 3)")
     ap.add_argument("--committer", type=int, default=None, help="two-frame shape: guardian whose approval is in VERIFY")
     a = ap.parse_args(argv)
     net = Net(a.network)
