@@ -104,6 +104,22 @@ transaction (VERIFY guardian A, VERIFY guardian B, SENDER). Anyone can deposit b
 exchange invitations, public keys and signatures through `.devnet/local/vaults/` (a local stand-in for a relay;
 it never holds a secret key).
 
+**On a phone (installable app).** The wallet page is a mobile web app (manifest, service worker, home-screen icon,
+bottom tab bar). Start the wallets with phone access and pair a phone:
+
+```sh
+infra/wallets.sh start --lan alice bob carol   # phones: https://<lan-ip>:9201, :9202, :9203
+infra/wallets.sh pair alice                    # link, pairing code and a QR code in the terminal
+```
+
+The same QR code and code are on the wallet's **Phone** screen on the computer. Once per phone, install the devnet
+CA (`https://<lan-ip>:9201/ca.crt`, file `.devnet/tls/ca.crt`) so the phone trusts the wallet's HTTPS certificate,
+then scan the QR code and choose *Install app* / *Add to Home Screen*. The phone is only a screen: the keys and all
+signing stay in the wallet process on the computer, and every API call from the LAN must carry that wallet's pairing
+code (20 wrong codes lock the LAN API for a minute). Android over USB needs no certificate or code:
+`adb reverse tcp:8201 tcp:8201`, then open `http://localhost:8201` on the phone. The loopback listener on
+`127.0.0.1` is unchanged. Icons: `python3 infra/make_app_icons.py`.
+
 Full local-devnet bring-up (including the native arm64 ethrex build for Apple Silicon): see
 [research/REPORT.md §10](research/REPORT.md#10-reproduce).
 
