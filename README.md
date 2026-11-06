@@ -1,8 +1,7 @@
 # PQ-Vault
 
-**A t-of-n post-quantum guardian wallet for EIP-8141 frame transactions (n guardians and threshold t fixed at
-creation), plus research on keeping *stateful* hash-based signatures safe through crashes, stale backups, cloned
-devices and rollback.**
+**A 2-of-3 post-quantum guardian wallet for EIP-8141 frame transactions, plus research on keeping *stateful*
+hash-based signatures safe through crashes, stale backups, cloned devices and rollback.**
 
 Built for ETHGlobal Mumbai 2026. Devnet only — research prototype, not audited, never use real funds.
 
@@ -21,14 +20,13 @@ Built for ETHGlobal Mumbai 2026. Devnet only — research prototype, not audited
 
 | Feature | How |
 |---|---|
-| Guardian authorization (t-of-n) | Three frames, the ERC-8421 `[only_verify, pay]` prefix plus one body frame. Frame 0 `VERIFY` (scope execution) and frame 1 `VERIFY` (scope payment) each run `validate()` over their share `[0,k)` / `[k,t)` of the t approvals (compact FORS *or* stateless SPX), pin the frame list and cap the fee. Frame 2 `SENDER` → `execute()` consumes every approval's leaf and runs the batch atomically. Every signature is verified before payment is approved: a missing, corrupted, stale or duplicate approval makes the transaction invalid and costs the vault nothing. All guardians sign the same message, independently and in any order. |
+| Guardian authorization (2-of-3) | Three frames, the ERC-8421 `[only_verify, pay]` prefix plus one body frame. Frame 0 `VERIFY` (scope execution) → `validate()` verifies guardian A; frame 1 `VERIFY` (scope payment) → `validate()` verifies guardian B (compact FORS *or* stateless SPX); both pin the frame list and cap the fee. Frame 2 `SENDER` → `execute()` consumes both leaves and runs the batch atomically. Both signatures are verified before payment is approved: a missing, corrupted, stale or duplicate approval makes the transaction invalid and costs the vault nothing. Both guardians sign the same message, independently and in any order. |
 | Replay protection | Protocol nonce + `TXPARAM(0x08)` (chain id, sender, nonce, fees, all frames) + domain tag; distinct guardians; and per-leaf replay protection through the **LeafLedger** (a stateful leaf can never be accepted twice). |
-| Key rotation | `registerSlot` / `revokeSlot`: a guardian gets a fresh compact slot (new randomness), approved t-of-n. |
-| Key-loss recovery | `replaceGuardian`: t remaining guardians install new master + slot keys; bumping the guardian epoch revokes every old slot. |
-| Stateful-signature safety (research result) | LeafLedger high-water marks enforced in `VERIFY`, chain-anchored signer, in-flight window, and permissionless **equivocation reports** that revoke a slot that signed two messages with one leaf. |
+| Key rotation | `registerSlot` / `revokeSlot`: a guardian gets a fresh compact slot (new randomness), approved 2-of-3. |
+| Key-loss recovery | `replaceGuardian`: the two remaining guardians install new master + slot keys; bumping the guardian epoch revokes every old slot. |
+| Stateful-signature safety (research result) | LeafLedger high-water marks checked in `VERIFY`, consumed in `SENDER`, chain-anchored signer, in-flight window, and permissionless **equivocation reports** that revoke a slot that signed two messages with one leaf. |
 | ERC-8421 alt mempool | `VERIFY` reads the shared LeafLedger — storage not associated with the sender, which the EIP-8141 canonical mempool refuses and the alt mempool admits for a **staked** sender; the vault stakes itself in its constructor. |
-| Two-frame fallback | For mempools that cap the whole prefix at EIP-8141's 100k (e.g. the stock workshop sidecar image `2e22ff0a`): frame 0 `VERIFY` (`self_verify`) → `validateAndCommit()` checks one compact approval that signs *last* over the exact bytes of all the others; frame 1 `SENDER` → `execute()` verifies the other t−1, consumes leaves, runs the batch. Residual cost of this shape only: an invalid later approval wastes the fee (≤ `MAX_TX_COST`) and the committer's leaf. Select it with `--frames 2` (default: 3 frames). |
-| Validation budget (100k cap) | t PQ approvals need ~86k (first compact approval in a frame) + ~68k per further compact approval, so t ≥ 2 exceeds EIP-8141's combined `MAX_VERIFY_GAS` (100k). ERC-8421 `[BUDGET-010]` gives each **staked** entity its own 1,000,000 budget; every validation frame here belongs to the staked vault. The deployed workshop sidecar does not implement `[BUDGET-010]`; `infra/sidecar-budget010/` adds it (patch + 7 tests + image build). |
+| Validation budget (100k cap) | Each VERIFY frame costs ~84k on chain (compact; ~292k stateless), so the prefix (~170k, 200,200 declared) exceeds EIP-8141's combined `MAX_VERIFY_GAS` (100k) — two upstream JARDIN verifications alone are ~109k. ERC-8421 `[BUDGET-010]` gives each **staked** entity its own 1,000,000 budget, and both frames belong to the staked vault. The stock workshop sidecar image does not implement it; `infra/sidecar-budget010/` adds it (patch + 7 tests + image build), and `infra/local-net.sh` runs it. |
 
 ## Layout
 
@@ -37,7 +35,8 @@ contracts/          Foundry project: PQVault, PQVaultFactory, LeafLedger, PQVaul
 pqv/                Python toolkit: frame-tx codec, JARDIN key wrapper, leaf-state stores, devnet driver, UI server
 app/                Single-page UI (no external scripts or trackers)
 research/           Simulator, crash experiment, results/, REPORT.md
-infra/              Local EIP-8141 devnet (Kurtosis; ethrex eip8141-tracer + Lighthouse); sidecar-budget010/ (ERC-8421 per-entity budgets)
+infra/              local-net.sh: one-command local network (Kurtosis ethrex eip8141-tracer + Lighthouse + skandha);
+                    sidecar-budget010/ (ERC-8421 per-entity budgets for the skandha sidecar)
 third_party/        JARDIN and SPHINCS- (git submodules, pinned)
 ```
 
@@ -45,8 +44,8 @@ third_party/        JARDIN and SPHINCS- (git submodules, pinned)
 
 Requirements: Foundry, Python ≥ 3.10 linked against OpenSSL ≥ 3.2 (for native `KECCAK-256`; e.g. Homebrew
 `python3.12`, or a uv-managed CPython on Linux), `git submodule update --init`. No pip packages are needed.
-Vault transactions with t ≥ 2 PQ approvals need an ERC-8421 mempool with per-entity budgets ([BUDGET-010]):
-`infra/sidecar-budget010/build.sh` builds one from the workshop sidecar.
+Vault transactions need an ERC-8421 mempool with per-entity budgets ([BUDGET-010]); `infra/local-net.sh` brings
+up a local network with one (Kurtosis, Docker, x86_64).
 
 ```sh
 # contracts + tests
@@ -57,15 +56,16 @@ python3.12 -m unittest discover -s tests -t .
 python3.12 research/run_experiments.py --seeds 20     # -> research/results/experiments.{json,md}
 python3.12 research/crash_test.py --kills 150         # -> research/results/crash_test.json
 
-# devnet: `public` (chain-1337 hackathon devnet) or `local` (Kurtosis: ethrex eip8141-tracer + Lighthouse + sidecar)
-infra/local-net.sh up            # Kurtosis ethrex (eip8141-tracer) + Lighthouse + skandha [BUDGET-010] sidecar,
-                                 # funded deployer, infra contracts; waits for Hegota (~10 min). `up stock` = stock sidecar
-python3.12 -m pqv.devnet local new-guardians --n 4
-python3.12 -m pqv.devnet local deploy-vault --threshold 2 --fund 2 --stake 0.02      # t-of-n, staked
+# local network: Kurtosis ethrex (eip8141-tracer) + Lighthouse + skandha [BUDGET-010] sidecar, funded deployer,
+# infra contracts; waits for Hegota (~10 min). `up stock` runs the stock sidecar instead (it rejects the vault).
+infra/local-net.sh up
+python3.12 -m pqv.devnet local new-guardians
+python3.12 -m pqv.devnet local deploy-vault --fund 2 --stake 0.02                    # staked 2-of-3 vault
 python3.12 -m pqv.devnet local transfer 0x<to> 1000000000000000 --guardians 0,1 [--stateless 1]
-python3.12 -m pqv.devnet local transfer 0x<to> 1000000000000000 --guardians 0,1 --frames 2   # fallback shape
-infra/local-net.sh status | down
+python3.12 -m pqv.devnet local rotate 0 && python3.12 -m pqv.devnet local recover 2
+python3.12 -m pqv.devnet local attack-stale-restore
 python3.12 -m pqv.server local       # UI on http://127.0.0.1:8141
+infra/local-net.sh status | down
 ```
 
 Full local-devnet bring-up (including the native arm64 ethrex build for Apple Silicon): see
@@ -73,22 +73,16 @@ Full local-devnet bring-up (including the native arm64 ethrex build for Apple Si
 
 ## Results at a glance
 
-- **Three-frame t-of-n vault (current design), local devnet** (ethrex `9aa3645d`): 2-of-4, 3-of-4 and
-  compact+stateless transfers, key rotation, recovery and the live attack, all included through a sidecar with
-  ERC-8421 [BUDGET-010]. The stock sidecar and ethrex's canonical mempool reject the same transactions
-  (combined 100k cap), and the [BUDGET-010] sidecar rejects an *unstaked* copy. VERIFY frames: 84,596 / 78,720 gas
-  (one compact approval each). Billed gas of a 2-of-n transfer: 379,769 (two-frame design: 378,782).
-  Receipts: [docs/RECEIPTS-three-frame.md](docs/RECEIPTS-three-frame.md); write-up: REPORT §8.1.
-- **Two-frame fallback, same contract** (REPORT §8.2): with the *stock* workshop sidecar image 2-of-4, 3-of-4 and compact+stateless transfers, rotation, recovery and the live attack were all
-  admitted and included on the local devnet; the stock sidecar rejects the three-frame shape. A two-frame 2-of-n
-  transfer costs 378,782 gas, the same as the original public-devnet transfers. Receipts:
-  [docs/RECEIPTS-two-frame-fallback.md](docs/RECEIPTS-two-frame-fallback.md).
-- **Earlier two-frame 2-of-3 design — PQ-signed EIP-8141 frame transactions on the public chain-1337 hackathon devnet**, admitted by the workshop's
-  ERC-8421 gateway: 2-of-3 transfers (compact+compact, compact+stateless), key rotation, key-loss recovery, a
-  transfer by the recovered guardian, a UI-initiated transfer, plus the live attack below — e.g. the first one,
+- **Three-frame 2-of-3 vault, local network** (`infra/local-net.sh`, ethrex `9aa3645d` + Lighthouse + skandha with
+  [BUDGET-010]): compact+compact and compact+stateless transfers, key rotation, key-loss recovery, a transfer by the
+  rotated + recovered guardians and the live attack, all status 0x1. VERIFY frames 83,842 / 75,875 gas (compact),
+  SENDER 59,809; a transfer is billed 379,513 gas (575,353 with two first-use ledger slots). ethrex's canonical
+  mempool and the stock sidecar reject the same transaction (combined 100k cap); the [BUDGET-010] sidecar rejects an
+  *unstaked* copy. Receipts: [docs/RECEIPTS-local.md](docs/RECEIPTS-local.md); write-up: REPORT §8.1.
+- **Original two-frame design on the public chain-1337 hackathon devnet** (historical; guardian A in VERIFY,
+  guardian B in SENDER): 2-of-3 transfers, rotation, recovery, a UI transfer and the live attack, e.g.
   [`0x1a38358a…9cc1`](https://explorer.altmempool.wtf/tx/0x1a38358af26665a862b8a1b27eb9817565f08119d1aea3678d9c5bddaf6c9cc1)
-  (block 366). VERIFY frame: **82,049 gas** on chain. Everything was also reproduced on a local Kurtosis devnet of
-  the same client. Receipts: [docs/RECEIPTS.md](docs/RECEIPTS.md).
+  (block 366). Receipts: [docs/RECEIPTS.md](docs/RECEIPTS.md). The public gateway is no longer a target (REPORT §8.1).
 - **Alt mempool is required, measured:** the canonical mempool rejects the vault (`StorageReadNonSender`); the alt
   mempool rejects an unstaked copy (`unstaked payer accessed … LeafLedger slot`) and admits the staked vault.
 - **Live attack:** a JARDIN-style vault with no on-chain leaf state included two transactions signed with the
@@ -99,9 +93,9 @@ Full local-devnet bring-up (including the native arm64 ethrex build for Apple Si
   γ = n, bounded to ~1 block of exposure by equivocation revocation. A persist-after-sign signer under fault
   injection reached γ = 100. Details and limitations: [research/REPORT.md](research/REPORT.md).
 
-See [research/REPORT.md](research/REPORT.md) for the research write-up, [docs/RECEIPTS.md](docs/RECEIPTS.md)
-for devnet transaction receipts, and [demo/pq-vault-demo.mp4](demo/pq-vault-demo.mp4) (2:56) for the demo video
-(narration: [demo/NARRATION.md](demo/NARRATION.md); rebuilt from recorded data by `python3.12 demo/build_demo.py`).
+See [research/REPORT.md](research/REPORT.md) for the research write-up, [docs/RECEIPTS-local.md](docs/RECEIPTS-local.md)
+for the current receipts, and [demo/pq-vault-demo.mp4](demo/pq-vault-demo.mp4) (2:56) for the demo video of the
+original design (narration: [demo/NARRATION.md](demo/NARRATION.md); rebuilt by `python3.12 demo/build_demo.py`).
 
 ## CROPS
 

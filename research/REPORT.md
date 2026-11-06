@@ -264,119 +264,82 @@ cancelled ("relayed 4 times without being included in a block") although they si
 raising `maxSubmitAttempts` fixed it (the next one needed 2 relays). This is an availability issue of the
 demo-grade relay path, not of the vault.
 
-### 8.1 Three frames, t-of-n, and the 100k validation cap (local devnet, `docs/RECEIPTS-three-frame.md`)
+### 8.1 Current design: one VERIFY frame per guardian (local network, `docs/RECEIPTS-local.md`)
 
-The results above are for the earlier two-frame 2-of-3 design (guardian A in VERIFY, guardian B in SENDER). The
-vault is now t-of-n (n ≤ 16 and 2 ≤ t ≤ n fixed at creation) and **every approval is verified before payment is
-approved**:
+The results above are for the original two-frame design (guardian A in VERIFY, guardian B in SENDER). The vault now
+verifies **both** approvals before payment is approved:
 
 ```
-signatures: t ARBITRARY entries (guardian indices strictly increasing), all over messageFor(sigHash)
-frame 0  VERIFY  scope EXECUTION (only_verify)   validate()‖0‖k   approvals [0, k)
-frame 1  VERIFY  scope PAYMENT   (pay, = vault)  validate()‖k‖t   approvals [k, t)
-frame 2  SENDER                                  execute(calls)   consume every leaf, run the batch
+signatures: 2 ARBITRARY entries (entry 0's guardian < entry 1's), both over messageFor(sigHash)
+frame 0  VERIFY  scope EXECUTION (only_verify)  validate()      guardian A
+frame 1  VERIFY  scope PAYMENT   (pay, = vault) validate()      guardian B
+frame 2  SENDER                                 execute(calls)  consume both leaves, run the batch
 ```
 
-ERC-8421 [PREFIX-010] admits at most these two VERIFY frames (`[only_verify, pay]`, each optionally after one
-`pre_verify` DEFAULT frame) and [PREFIX-050] forbids VERIFY after the prefix, so "one VERIFY frame per guardian"
-is standard-compliant only for t = 2; for larger t the approvals are split across the two frames (k chosen by the
-driver to balance gas). ethrex itself accepts any number of VERIFY frames; the limit is mempool policy.
+This is ERC-8421's `[only_verify, pay]` prefix; [PREFIX-010] allows at most these two VERIFY frames, which is
+exactly one per approving guardian for 2-of-3. A missing, corrupted, stale, duplicated or wrong-message approval
+reverts a VERIFY frame and makes the transaction invalid — no fee, no leaf consumed. That removes the two-frame
+design's "lone guardian can make the vault pay up to `MAX_TX_COST`" weakness and the relayer-corruption issue (G6)
+without `firstMessageFor` chaining: the guardians sign the same message independently, in any order. VERIFY
+frames only *check* leaves (static); the SENDER frame *consumes* them with `LeafLedger.consume` (atomic
+check-and-update), so a leaf consumed by another transaction after validation is caught there (`LeafRaced`:
+nothing executes, the other leaf is still consumed because its signature is public). Tests:
+`contracts/test/PQVault.t.sol` (26, real JARDIN signatures and verifiers, opcodes mocked).
 
-What changed in security terms: a missing, corrupted, stale, duplicated or wrong-message approval now reverts a
-VERIFY frame, which makes the transaction invalid — no fee, no leaf consumed. This removes the two-frame design's
-"lone guardian can make the vault pay up to `MAX_TX_COST`" weakness and the relayer-corruption issue (G6) without
-the `firstMessageFor` chaining, so guardians sign the same message independently and in any order. VERIFY frames
-only *check* leaves (static); the SENDER frame *consumes* them with `LeafLedger.consume` (atomic check-and-update),
-so a leaf consumed by another transaction after validation is caught there (`LeafRaced`: nothing executes, the
-other leaves are still consumed because their signatures are public). Tests: `contracts/test/PQVault.t.sol`
-(29 tests, real JARDIN signatures and verifiers, opcodes mocked).
+**The 100k validation cap.** Per VERIFY frame: 87,756 / 82,110 gas (Foundry, compact, frames 0 / 1), 296,854 with
+a stateless SPX approval; on chain 83,842 / 75,875 and 291,773. Two upstream JARDIN verifications alone are ~109k,
+so no vault-side change fits EIP-8141's combined `MAX_VERIFY_GAS` (100,000). ERC-8421 [BUDGET-010] replaces the
+combined sum, for alternative mempools, with a per-entity sum: 1,000,000 for a **staked** entity
+(`MAX_VERIFY_GAS_STAKED_ENTITY`), 100,000 unstaked. Both VERIFY frames belong to the vault (sender and payer), which
+stakes itself. The workshop sidecar (`2e22ff0a`, also the current upstream head) intentionally does not implement
+[BUDGET-010]; `infra/sidecar-budget010/` adds it (two source files; 7 new unit tests; executor suite 393 passed vs
+386 before, same 5 pre-existing load failures; built on the published image digest without any npm download).
+ethrex needs no change: its simulate RPC records the overage in `canonicalMempoolViolation` and still executes and
+traces. `infra/local-net.sh` brings up ethrex (eip8141-tracer) + Lighthouse + this sidecar in one command.
 
-**Validation gas** (Foundry, gas-faithful FrameOps stand-in / ethrex simulation on the local devnet):
+**Run on the local network** (ethrex `9aa3645d`, chain 3151908; all receipts in `docs/RECEIPTS-local.md`):
 
-| VERIFY frame content | Foundry (current code) | ethrex, run 1 (commit `ad291d5`) | ethrex, current code |
+| transaction | result | VERIFY 0 / VERIFY 1 / SENDER gas | billed gas |
 |---|---|---|---|
-| frame 0, 1 compact approval | 86,135 | 84,596 | 84,718 |
-| frame 1, 1 compact approval | 85,110 | 78,720 | 78,872 |
-| frame 1, 2 compact approvals (3-of-4) | 154,630 | 146,790 | — |
-| frame 1, 1 stateless SPX approval | 295,410 | 291,470 | — |
+| transfer, guardians 0+1 (compact+compact) | block 74, 0x1 | 83,842 / 75,875 / 59,809 | 575,353 (2 first-use ledger slots) |
+| transfer, guardians 1+2 (compact + **stateless SPX**) | block 75, 0x1 | 83,842 / 291,773 / 45,481 | 621,113 |
+| key rotation for guardian 0 (approved by 1+2) | block 76, 0x1 | 83,842 / 75,875 / 79,221 | 597,881 |
+| key-loss recovery of guardian 2 (approved by 0+1) | block 77, 0x1 | 83,842 / 75,875 / 110,502 | 685,561 |
+| transfer by the rotated + recovered guardians (0+2) | block 78, 0x1 | 83,842 / 75,875 / 59,809 | 477,433 |
+| transfer 1+2 via `research/mempool_admission.py` | block 116, 0x1 | 83,842 / 75,875 / 59,809 | 379,513 |
+| baseline vault, two transfers on the **same** leaf after a stale restore | blocks 120, 121 | | 379,513 each |
+| watcher's equivocation proof revokes that slot | block 122 | | (legacy tx) |
 
-So any t ≥ 2 exceeds EIP-8141's combined `MAX_VERIFY_GAS` (100,000). ERC-8421 [BUDGET-010] replaces the combined
-sum, for alternative mempools, with a per-entity sum capped at 1,000,000 for a **staked** entity
-(`MAX_VERIFY_GAS_STAKED_ENTITY`; 100,000 unstaked). Both VERIFY frames belong to the vault (sender and payer),
-which stakes itself, so t ≈ 12 compact approvals fit. The deployed workshop sidecar (`2e22ff0a`, also the current
-upstream head) intentionally does not implement [BUDGET-010]; `infra/sidecar-budget010/` adds it (two source
-files; 7 new unit tests; executor suite 393 passed vs 386 before, same 5 pre-existing load failures; built on the
-published image digest without any npm download). ethrex needs no change: its simulate RPC records the overage in
-`canonicalMempoolViolation` and still executes and traces.
+The same restored signer against PQ-Vault was refused in VERIFY frame 0: `StaleLeaf(slotId, 2)` (selector
+`0x7dced17e`), in simulation and by the sidecar.
 
-**Admission, local devnet (ethrex `9aa3645d`, chain 3151908), recorded node responses:**
+**Admission (recorded node responses):**
 
-| transaction | ethrex canonical mempool | stock sidecar (combined 100k) | [BUDGET-010] sidecar |
-|---|---|---|---|
-| staked 2-of-4, compact+compact | rejected: prefix gas budget exceeds MAX_VERIFY_GAS | rejected: `… sum 200000 + signature-verification cost 200 = 200200 exceeds MAX_VERIFY_GAS 100000` | admitted, included (block 75 and 4 more) |
-| staked 3-of-4, 3 compact (k=1) | rejected | — | admitted, block 85 |
-| staked 2-of-4, compact + stateless SPX | rejected | — | admitted, block 86 |
-| **unstaked** 2-of-4 (control) | rejected | — | rejected: `validation gas of unstaked entity … 200200 … exceeds MAX_VERIFY_GAS_PER_ENTITY 100000 [BUDGET-010]` |
+| submission | result |
+|---|---|
+| staked vault → ethrex canonical mempool | rejected: `Frame transaction prefix gas budget (frames + sig cost) exceeds MAX_VERIFY_GAS` |
+| staked vault → stock sidecar | rejected: `validation prefix execution gas sum 200000 + signature-verification cost 200 = 200200 exceeds MAX_VERIFY_GAS 100000` |
+| **unstaked** vault → [BUDGET-010] sidecar | rejected: `validation gas of unstaked entity … 200200 (incl. signature-verification cost 200) exceeds MAX_VERIFY_GAS_PER_ENTITY 100000 [BUDGET-010]` |
+| staked vault → [BUDGET-010] sidecar | admitted and included (table above) |
 
-Key rotation (block 89), lost-guardian recovery (block 90), a transfer by the rotated + recovered guardians
-(block 92) and the live stale-backup attack (baseline vault included two transfers on one leaf, blocks 95/96;
-equivocation report revoked the slot, block 97; PQ-Vault refused the restored signer in VERIFY frame 0 with
-`StaleLeaf(slotId, 2)`) all ran on three-frame transactions through the [BUDGET-010] sidecar.
-
-**Cost.** ethrex bills a frame transaction at `max(standard, 12,000 + 475·frames + 100·signatures + 64·bytes)`
-plus state gas (EIP-7623/7976 calldata floor, `transaction.rs`); PQ-Vault transactions are floor-bound, so the
-bill is set by bytes, not by execution gas. A 2-of-n transfer costs **379,769** gas (= 13,625 + 64 × 5,721 bytes),
-versus 378,782 for the two-frame design (+987: one more frame and 8 more bytes of frame data); a 3-of-4 transfer
-with two first-use ledger slots costs 751,005 (= 13,725 + 64 × 8,460 + 195,840 state gas). About 91% of a 2-of-n
-transfer's bytes are the two 2,705-byte FORS signatures.
+**Cost.** ethrex bills a frame transaction at `max(standard, 12,000 + 475·frames + 100·signatures + 64·bytes)` plus
+state gas (EIP-7623/7976 calldata floor, `transaction.rs`); PQ-Vault transactions are floor-bound, so the bill is
+set by bytes, not by execution gas. A transfer costs **379,513** gas versus 378,782 for the original two-frame
+design (+731 = one more frame, 475, and its 4-byte `validate()` selector, 256). About 91% of a transfer's bytes are
+the two 2,705-byte FORS signatures.
 
 **Public gateway (measured, then dropped as a target).** We had assumed the public chain-1337 gateway runs the
-stock sidecar rules. Measured on 2026-11-06 with the current contract deployed there (vault `0x9635…880f`), it does
-not: it *admitted* a staked three-frame transaction with a 200,200-gas prefix (`0xf9eba3c1…e8e1a`; its rule report
-passes `structure`, the budget check), and an *unstaked* three-frame copy also passed `structure` and was rejected
-only by the storage rule (`unstaked sender accessed <LeafLedger> slot`). Neither that transaction nor an earlier
-admitted two-frame one was included within 15 minutes (status stayed `New`). Because its rules and its bundler are
-outside our control and not reproducible, the project now targets a local network (`infra/local-net.sh`: ethrex
-eip8141-tracer + Lighthouse + skandha, [BUDGET-010] or stock image). The [BUDGET-010] patch stays relevant for the
-published sidecar image.
+stock sidecar rules. Measured on 2026-11-06 with this contract's predecessor deployed there (vault `0x9635…880f`),
+it does not: it *admitted* a staked three-frame transaction with a 200,200-gas prefix (`0xf9eba3c1…e8e1a`; its rule
+report passes `structure`, the budget check), and an *unstaked* copy also passed `structure` and was rejected only by
+the storage rule (`unstaked sender accessed <LeafLedger> slot`). Nothing we submitted there was included within
+15 minutes (status stayed `New`). Because its rules and its bundler are outside our control and not reproducible, the
+project targets the local network instead.
 
-### 8.2 Two-frame fallback for combined-100k mempools (local devnet, `docs/RECEIPTS-two-frame-fallback.md`)
-
-The vault accepts a second shape, selected by the frame count, for mempools that apply EIP-8141's combined
-`MAX_VERIFY_GAS` (the stock workshop sidecar image `2e22ff0a`):
-
-```
-signatures: entry 0 = the committer's compact approval; entries 1..t-1 in increasing guardian order
-frame 0  VERIFY  scope EXECUTION+PAYMENT (self_verify)  validateAndCommit()  entry 0 only
-frame 1  SENDER                                         execute(calls)       verify entries 1..t-1, consume, run
-```
-
-Only one JARDIN verification fits 100k, so entries 1..t-1 are verified after payment is approved. Their bytes are
-elided from the signature hash, so entry 0 signs **last**, over `firstMessageFor(sigHash, restHash)` with
-`restHash = keccak256(keccak256(e1) ‖ … ‖ keccak256(e_{t-1}))`: a relayer that alters any later entry invalidates
-the VERIFY frame (test `test_twoFrame_relayerMutatedLaterEntry_invalid`). Any guardian may be the committer, but
-its approval must be compact (SPX does not fit). The residual cost is the old two-frame one, now bounded by the
-same rule for every t: if a later approval is invalid, nothing executes, the fee (≤ `MAX_TX_COST`) is paid and the
-committer's leaf is consumed (`ApprovalRejected`). The driver uses three frames unless told otherwise (`--frames 2`,
-or `"frames": 2` in `network.json`). VERIFY gas: 89,647 (t = 2) and 89,996 (t = 3) in Foundry, 85,506 / 89,468 on chain;
-declared limit `100,000 − 100·t`, so prefix + signature cost is exactly 100,000.
-
-Run 2 on the local devnet (fresh factory/ledger/vaults with the current code), **stock** sidecar (same image
-digest as the workshop's), recorded responses:
-
-| transaction | ethrex canonical mempool | stock sidecar | included |
-|---|---|---|---|
-| 2-of-4, 2 frames, compact+compact | rejected (`StorageReadNonSender`, the shared ledger read) | admitted | block 337 (574,622 gas incl. 2 first-use ledger slots) and 708 (378,782) |
-| 2-of-4, 2 frames, compact + stateless SPX | rejected | admitted | block 713 (620,382) |
-| 3-of-4, 2 frames (committer = guardian 0) | rejected | admitted | block 725 (750,018) |
-| 2-of-4, **3 frames** (control) | rejected (prefix gas budget) | rejected: `… = 200200 exceeds MAX_VERIFY_GAS 100000` | — |
-
-Also in two frames through the stock sidecar: rotation (block 732), recovery (733), a transfer by the rotated and
-recovered guardians (734), and the live stale-restore attack (baseline double inclusion at 737/738, equivocation
-revocation at 739 — the watcher reconstructs the committer's `firstMessageFor` from the public transaction — and
-PQ-Vault's VERIFY frame refusing the restored signer with `StaleLeaf(slotId, 10)`). With the [BUDGET-010] sidecar
-the same code was included in both shapes (three frames block 742, 379,769 gas; two frames block 744, 378,782 gas).
-The billed gas of a two-frame 2-of-n transfer, 378,782, equals the original public-devnet transfers: same bytes.
+**Explored and dropped.** A t-of-n generalisation (approvals split across the two VERIFY frames) and a two-frame
+fallback for combined-100k mempools (one compact approval in VERIFY committing to the others' bytes) were built,
+tested and run on the local network, then removed to keep the vault 2-of-3 with one VERIFY frame per guardian; they
+are in git history (commits `ad291d5`, `1b5507f`).
 
 ## 9. Limitations and unsuccessful experiments
 
@@ -401,10 +364,10 @@ The billed gas of a two-frame 2-of-n transfer, 378,782, equals the original publ
   Where nothing can be trusted, use the stateless path (PQ-Vault already supports it as the second approval).
 - **Cross-protocol reuse.** The ledger only sees PQ-Vault usage. The same slot used in another account type
   (e.g. a JARDIN 4337 account) is not tracked.
-- **Single guardian could spend fees (two-frame design only).** Resolved by the three-frame design (§8.1): every
-  approval is verified in a VERIFY frame. The price is a validation prefix above EIP-8141's 100k, so the vault
+- **Single guardian could spend fees (two-frame design only).** Resolved by the current design (§8.1): both
+  approvals are verified in VERIFY frames. The price is a validation prefix above EIP-8141's 100k, so the vault
   needs an ERC-8421 mempool with [BUDGET-010] (or no combined cap) and a stake; the stock workshop sidecar image
-  does not have it (`infra/sidecar-budget010/` adds it). Mempools with the combined cap use the §8.2 fallback.
+  does not have it (`infra/sidecar-budget010/` adds it).
 - **Model scope.** Simulator magnitudes depend on scenario parameters (backup age 10, rollback depth 3, …);
   the qualitative ordering is what we claim. SIGKILL tests process crashes, not power loss (unsynced page
   cache survives SIGKILL); power loss is modelled, not measured. No hardware secure element was tested.
@@ -422,21 +385,18 @@ The billed gas of a two-frame 2-of-n transfer, 378,782, equals the original publ
   needless revocations (7 per run in one scenario); it now reports only exploitable reuse.
 - **2-of-3 inside `VERIFY` does not fit the deployed sidecar**: two JARDIN FORS verifications plus overhead
   exceed `MAX_VERIFY_GAS = 100,000`, and the deployed sidecar (forshtat/mempool-workshop-sidecar @ 2e22ff0a)
-  caps the whole prefix at 100k. The two-frame design split verification instead; §8.1 moves all approvals into
-  VERIFY and implements ERC-8421 [BUDGET-010] in the sidecar (local devnet only).
-- **Admitted but never included (§8.2, infrastructure).** Two two-frame transactions (3-of-4, and compact+SPX)
-  plus one resubmission were admitted by the stock sidecar, relayed 41 times through ethrex's privileged path and
-  cancelled. ethrex built a payload every slot in that window; its skip reason is only logged at debug level,
-  which we then enabled at runtime (`admin_setLogLevel "info,ethrex_blockchain=debug"`). The same shapes,
-  resubmitted, were included (blocks 713, 725); the only skip logged afterwards was a duplicate relay of an
-  already-applied transaction (`Nonce mismatch`). Root cause of the earlier drops: not determined.
-- **Per-vault slot governance (§8.2).** One guardian set can guard several vaults, but rotation/recovery is
-  approved per vault: after rotating guardian 1 and recovering guardian 2 on the 2-of-4 vault, the 3-of-4 vault
-  still registered their old slots and refused the new ones (`BadEntry(0, R_SLOT)`), as designed.
-- **Mislabelled admission runs (§8.1).** Our first scripted batch of four admission cases passed each case's
-  arguments as one zsh word (zsh does not split unquoted variables), so all four ran the default case (staked
-  2-of-4, guardians 0 and 1) under the wrong tags. The four transactions are real and were included; their
-  records were relabelled "budget010-2of4 repeat N" with a note, and the three intended cases were rerun.
+  caps the whole prefix at 100k. The original design split verification instead; §8.1 moves both approvals into
+  VERIFY and implements ERC-8421 [BUDGET-010] in the sidecar.
+- **Admitted but not included (infrastructure).** On the local network a few transactions admitted by the sidecar
+  were never included: during the (since removed) two-frame runs, three were relayed 41 times through ethrex's
+  privileged path and cancelled while ethrex built a payload every slot; in the current run one was not included
+  within 180 s before the sidecar container was replaced. ethrex logs the builder's skip reason only at debug level
+  (`admin_setLogLevel "info,ethrex_blockchain=debug"`); with it enabled, resubmissions were included and the only
+  skip logged was a duplicate relay of an already-applied transaction (`Nonce mismatch`). Root cause: not
+  determined; the transactions themselves were valid (identical resubmissions were included).
+- **Mislabelled admission runs.** One scripted batch of admission cases passed each case's arguments as one zsh
+  word (zsh does not split unquoted variables), so all ran the default case under the wrong tags. The transactions
+  were real and included; the records were relabelled with a note and the intended cases rerun.
 - Infrastructure: the public devnet stalled at block 408,262 for several hours (head timestamp >6 h old, faucet
   empty) before being reset; meanwhile the published amd64 ethrex image segfaulted (exit 139) under emulation on
   Apple Silicon, so we built ethrex @ 9aa3645d natively for arm64 and ran a local Kurtosis devnet. After the reset,
@@ -467,17 +427,15 @@ python3.12 -m pqv.devnet local deploy-infra
 ./infra/sidecar-local.sh <ethrex-port> <staking address from .devnet/local/deployment.json>
 infra/sidecar-budget010/build.sh                               # ERC-8421 [BUDGET-010] sidecar image
 SIDECAR_IMAGE=pqvault/mempool-sidecar:budget-010 ./infra/sidecar-local.sh <ethrex-port> <staking>
-python3.12 -m pqv.devnet local new-guardians --n 4
-python3.12 -m pqv.devnet local deploy-vault --threshold 2 --fund 2 --stake 0.02
-python3.12 -m pqv.devnet local deploy-vault --vault vault34 --threshold 3 --fund 2 --stake 0.02
+python3.12 -m pqv.devnet local new-guardians
+python3.12 -m pqv.devnet local deploy-vault --fund 2 --stake 0.02
+python3.12 -m pqv.devnet local deploy-vault --vault unstakedVault --fund 1 --stake 0      # control
 python3.12 -m pqv.devnet local transfer <to> 1000000000000000 --guardians 0,1          # after Hegota (epoch 2)
-python3.12 -m pqv.devnet local transfer <to> 1000000000000000 --vault vault34 --guardians 0,2,3
-python3.12 -m pqv.devnet local transfer <to> 2000000000000000 --guardians 1,3 --stateless 3
-python3 -m research.mempool_admission local <tag> [--vault ...] [--guardians ...] [--frames 2|3]  # node responses
-python3.12 -m pqv.devnet local transfer <to> 1000000000000000 --guardians 0,1 --frames 2   # fallback shape (stock sidecar)
+python3.12 -m pqv.devnet local transfer <to> 2000000000000000 --guardians 1,2 --stateless 2
+python3 -m research.mempool_admission local <tag> [--vault ...] [--guardians ...]      # records node responses
 python3.12 -m pqv.devnet local rotate 0 && python3.12 -m pqv.devnet local recover 2
 python3.12 -m pqv.devnet local attack-stale-restore
-python3.12 -m pqv.receipts local --out docs/RECEIPTS-three-frame.md
+python3.12 -m pqv.receipts local --out docs/RECEIPTS-local.md
 ```
 
 ## Sources

@@ -1,10 +1,10 @@
 # ERC-8421 `[BUDGET-010]` for the workshop alt-mempool sidecar
 
-PQ-Vault checks every guardian's post-quantum signature inside the validation prefix. That is two or more
-JARDIN verifications, about 86k gas for a VERIFY frame with one compact approval and about 68k for each
-further approval (`contracts/test/PQVault.t.sol`, gas tests). The deployed sidecar
-(`forshtat/mempool-workshop-sidecar` @ `2e22ff0a`, image digest `sha256:c4cdc5c7…`) caps the **sum over the
-whole prefix** at EIP-8141's `MAX_VERIFY_GAS = 100,000`, so it rejects any t ≥ 2 vault. Its own design
+PQ-Vault (2-of-3) checks both guardians' post-quantum signatures inside the validation prefix, one per VERIFY
+frame: about 84k gas each on chain with a compact approval (~292k with a stateless one; `docs/RECEIPTS-local.md`),
+~170k in total. The workshop sidecar (`forshtat/mempool-workshop-sidecar` @ `2e22ff0a`, image digest
+`sha256:c4cdc5c7…`) caps the **sum over the whole prefix** at EIP-8141's `MAX_VERIFY_GAS = 100,000`, so it rejects
+the vault. Its own design
 notes say it left out ERC-8421's per-entity budgets on purpose (`docs/superpowers/plans/2026-09-28-prevalidate-frame-shapes.md`:
 "Do not implement `BUDGET-010`'s per-entity staked gas budget bump").
 
@@ -66,5 +66,5 @@ This PR:
 - adds 7 unit tests; the existing 28 prefix tests pass unchanged.
 
 Motivating case: a staked 2-of-3 guardian account that verifies two JARDIN (SPHINCS-family) signatures in
-`[only_verify, pay]` frames needs ~171k of validation gas and is rejected today with
+`[only_verify, pay]` frames needs ~170k of validation gas (200,200 declared) and is rejected today with
 `validation prefix execution gas sum … exceeds MAX_VERIFY_GAS 100000`.

@@ -91,7 +91,7 @@ cmd_up() {
   start_sidecar "$kind"
   log "waiting for Hegota (block $HEGOTA_BLOCK; ~7 min after genesis)"
   until [ "$(cast block-number --rpc-url "$rpc")" -ge "$HEGOTA_BLOCK" ]; do sleep 10; done
-  log "ready. next: $py -m pqv.devnet local new-guardians --n 4 && $py -m pqv.devnet local deploy-vault --threshold 2"
+  log "ready. next: $py -m pqv.devnet local new-guardians && $py -m pqv.devnet local deploy-vault --fund 2 --stake 0.02"
 }
 
 cmd_status() {
