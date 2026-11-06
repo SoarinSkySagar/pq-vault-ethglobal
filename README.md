@@ -69,6 +69,19 @@ python3.12 -m pqv.server local       # wallet website on http://127.0.0.1:8141 (
 infra/local-net.sh status | down
 ```
 
+### Personal wallets for a demo (MetaMask-style)
+
+```sh
+infra/wallets.sh start alice bob carol   # -> http://127.0.0.1:8201, :8202, :8203 (one browser window each)
+infra/wallets.sh status | stop
+```
+
+Each wallet is one person's account: a 2-of-3 PQ-Vault smart account whose three post-quantum keys stay on this
+computer (`.devnet/local/wallets/<name>/`). The first visit offers **Create wallet** (keys, account and 1 test ETH,
+about 20 s). Then: balance, **Send** (pick another wallet or paste an address, review with the network fee, confirm),
+**Receive**, **Add test ETH**, activity (sent and received, read from the chain), key health, and network settings
+(node RPC and alt-mempool URLs). Each account gets its own colour and avatar, so side-by-side windows stay distinct.
+
 Full local-devnet bring-up (including the native arm64 ethrex build for Apple Silicon): see
 [research/REPORT.md §10](research/REPORT.md#10-reproduce).
 

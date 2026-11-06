@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PQ Wallet</title>
+<meta name="color-scheme" content="light">
+<style>
+  :root {
+    --page: #E6EBF1;
+    --panel: #FFFFFF;
+    --ink: #172131;
+    --slate: #5D6B7E;
+    --rule: #D5DCE5;
+    --soft: #F3F6F9;
+    --plus: #2F6F5E;
+    --warn: #A86A12;
+    --bad: #B4372F;
+    --acc: #3B5BA9;
+    --sans: "Avenir Next", "Segoe UI Variable Text", "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--page); color: var(--ink); font: 15px/1.45 var(--sans); font-variant-numeric: tabular-nums; }
+  body { margin: 0; min-height: 100vh; display: flex; justify-content: center; align-items: flex-start; padding: 32px 12px; }
+  button, input { font: inherit; color: inherit; }
+  :focus-visible { outline: 3px solid var(--acc); outline-offset: 2px; }
+
+  .wallet { width: 100%; max-width: 400px; background: var(--panel); border-radius: 16px; border: 1px solid var(--rule);
+    overflow: hidden; border-top: 6px solid var(--acc); }
+
+  .top { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--rule); }
+  .net { display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border: 1px solid var(--rule); border-radius: 999px;
+    background: var(--soft); font-size: 13px; cursor: pointer; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--slate); }
+  .dot.on { background: var(--plus); }
+  .dot.off { background: var(--bad); }
+  .icon-btn { margin-left: auto; border: 1px solid var(--rule); background: var(--panel); border-radius: 8px; padding: 4px 10px; cursor: pointer; font-size: 13px; }
+
+  .screen { padding: 20px 20px 24px; }
+  .who { display: flex; align-items: center; gap: 12px; }
+  .avatar { width: 40px; height: 40px; flex: none; border-radius: 10px; display: grid; grid-template-columns: repeat(5, 1fr);
+    overflow: hidden; background: var(--soft); }
+  .avatar.big { width: 72px; height: 72px; border-radius: 16px; }
+  .avatar span.on { background: var(--acc); }
+  .who h1 { margin: 0; font-size: 17px; text-transform: capitalize; }
+  .addr-btn { border: 0; background: none; padding: 0; color: var(--slate); font-family: var(--mono); font-size: 13px; cursor: pointer; }
+  .addr-btn:hover { color: var(--ink); }
+
+  .bal { text-align: center; margin: 28px 0 22px; }
+  .bal .amt { font-size: 40px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
+  .bal .unit { font-size: 20px; color: var(--slate); font-weight: 500; margin-left: 6px; }
+
+  .actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 22px; }
+  .act { display: flex; flex-direction: column; align-items: center; gap: 6px; border: 0; background: none; cursor: pointer; font-size: 14px; padding: 4px; border-radius: 10px; }
+  .act .circle { width: 44px; height: 44px; border-radius: 50%; background: var(--acc); color: #fff; display: grid; place-items: center; font-size: 20px; line-height: 1; }
+  .act:disabled { opacity: .45; cursor: not-allowed; }
+
+  .tabs { display: flex; border-bottom: 1px solid var(--rule); margin: 0 -20px; padding: 0 20px; }
+  .tab { border: 0; background: none; padding: 10px 14px; cursor: pointer; color: var(--slate); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .tab[aria-selected=true] { color: var(--ink); border-bottom-color: var(--acc); font-weight: 600; }
+  .list { list-style: none; margin: 0 -20px; padding: 0; }
+  .list li { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 12px 20px; border-bottom: 1px solid var(--rule); }
+  .list .t { font-weight: 600; text-transform: none; }
+  .list .s { color: var(--slate); font-size: 13px; }
+  .list .v { text-align: right; font-weight: 600; white-space: nowrap; }
+  .list .v.plus { color: var(--plus); }
+  .empty { color: var(--slate); padding: 20px 0 4px; text-align: center; }
+
+  .key { padding: 12px 0; border-bottom: 1px solid var(--rule); }
+  .bar { height: 6px; background: var(--soft); border-radius: 3px; overflow: hidden; margin: 6px 0 4px; }
+  .bar span { display: block; height: 100%; background: var(--acc); }
+  .note { font-size: 13px; color: var(--slate); margin: 12px 0 0; }
+
+  h2 { font-size: 18px; margin: 0 0 16px; }
+  .back { border: 0; background: none; padding: 0; color: var(--slate); cursor: pointer; margin-bottom: 14px; font-size: 14px; }
+  label.f { display: block; font-weight: 600; font-size: 14px; margin: 0 0 6px; }
+  .in { width: 100%; padding: 11px 12px; border: 1px solid var(--rule); border-radius: 10px; background: var(--soft); }
+  .in.mono { font-family: var(--mono); font-size: 13px; }
+  .field { margin-bottom: 14px; }
+  .err { color: var(--bad); font-size: 13px; min-height: 1.3em; margin-top: 4px; }
+  .contacts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .contact { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--rule); background: var(--panel); border-radius: 999px;
+    padding: 3px 10px 3px 4px; cursor: pointer; font-size: 13px; text-transform: capitalize; }
+  .contact .avatar { width: 20px; height: 20px; border-radius: 5px; }
+  .amount-row { display: flex; gap: 8px; }
+  .amount-row .in { flex: 1; }
+  .max { border: 1px solid var(--rule); background: var(--panel); border-radius: 10px; padding: 0 14px; cursor: pointer; }
+
+  .btn { width: 100%; border: 0; background: var(--acc); color: #fff; border-radius: 999px; padding: 12px 16px; font-weight: 600; cursor: pointer; }
+  .btn.ghost { background: transparent; color: var(--ink); border: 1px solid var(--rule); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 20px; }
+
+  .review { border: 1px solid var(--rule); border-radius: 12px; overflow: hidden; }
+  .review .r { display: flex; justify-content: space-between; gap: 12px; padding: 12px 14px; }
+  .review .r + .r { border-top: 1px solid var(--rule); }
+  .review .k { color: var(--slate); }
+  .review .vv { text-align: right; }
+  .pq { margin-top: 14px; padding: 10px 12px; background: var(--soft); border-radius: 10px; font-size: 13px; color: var(--slate); }
+
+  .steps { list-style: none; padding: 0; margin: 4px 0 0; }
+  .steps li { padding: 8px 0 8px 26px; position: relative; }
+  .steps li::before { content: ""; position: absolute; left: 4px; top: 14px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--rule); }
+  .steps li.done::before { background: var(--plus); border-color: var(--plus); }
+  .steps li.now::before { border-color: var(--acc); }
+  .steps li.err { color: var(--bad); }
+  .steps li.err::before { border-color: var(--bad); background: var(--bad); }
+  .big-done { text-align: center; padding: 8px 0 4px; }
+  .big-done .amt { font-size: 28px; font-weight: 600; }
+
+  .recv { text-align: center; }
+  .recv .avatar { margin: 0 auto 14px; }
+  .recv code { display: block; font-family: var(--mono); font-size: 15px; line-height: 1.7; word-spacing: 6px; padding: 14px; background: var(--soft);
+    border-radius: 12px; margin: 10px 0 16px; word-break: break-all; }
+  .center { text-align: center; }
+  .muted { color: var(--slate); }
+  .small { font-size: 13px; }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .screen { animation: in .18s ease-out; }
+    @keyframes in { from { opacity: 0; transform: translateY(4px); } }
+  }
+</style>
+</head>
+<body>
+<div class="wallet" id="wallet">
+  <div class="top">
+    <button class="net" id="net-pill" type="button" title="Network settings"><span class="dot" id="dot"></span><span id="net-text">Connecting…</span></button>
+    <button class="icon-btn" id="settings-btn" type="button">Network</button>
+  </div>
+  <div id="view"></div>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const short = (a) => a ? a.slice(0, 6) + "…" + a.slice(-4) : "";
+const ACCENTS = ["#2F6F5E", "#3B5BA9", "#7C4A9E", "#2C7DA0", "#6A7B2E", "#A04E68"];
+let S = null, A = [], screen = "home", tab = "activity", busy = false, sendDraft = { to: "", amount: "" }, jobView = null;
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || `request failed (${r.status})`);
+  return j;
+}
+
+// ---- amounts, exact ----
+function ethToWei(s) {
+  s = String(s).trim();
+  if (!/^\d+(\.\d{1,18})?$/.test(s)) return null;
+  const [i, f = ""] = s.split(".");
+  return BigInt(i) * 10n ** 18n + BigInt((f + "0".repeat(18)).slice(0, 18));
+}
+function eth(w, dp = 4) {
+  w = BigInt(w);
+  const i = w / 10n ** 18n, f = (w % 10n ** 18n).toString().padStart(18, "0").slice(0, dp).replace(/0+$/, "");
+  return i.toLocaleString("en-US") + (f ? "." + f : "");
+}
+
+// ---- identity: an avatar drawn from the address, and an accent colour ----
+function avatar(addr, cls = "") {
+  const hex = (addr || "0x").slice(2).toLowerCase().padEnd(40, "0");
+  let cells = "";
+  for (let r = 0; r < 5; r++) for (let c = 0; c < 5; c++) {
+    const col = c < 3 ? c : 4 - c, on = parseInt(hex[r * 3 + col], 16) % 2 === 1;
+    cells += `<span class="${on ? "on" : ""}"></span>`;
+  }
+  return `<div class="avatar ${cls}" aria-hidden="true">${cells}</div>`;
+}
+function hexOf(str) {  // a stable 40-hex-digit fingerprint for a name (FNV-1a, repeated)
+  let out = "", h = 0x811c9dc5;
+  for (let k = 0; out.length < 40; k++) {
+    for (const ch of str + k) { h ^= ch.charCodeAt(0); h = Math.imul(h, 0x01000193) >>> 0; }
+    out += h.toString(16).padStart(8, "0");
+  }
+  return "0x" + out.slice(0, 40);
+}
+const accentFor = (addr) => ACCENTS[parseInt((addr || "0x00").slice(2, 4), 16) % ACCENTS.length];
+
+// ---- data ----
+async function refresh() {
+  try { S = await api("/api/state"); } catch (e) { S = null; }
+  const n = S && S.network;
+  $("dot").className = "dot " + (n && n.connected ? "on" : "off");
+  $("net-text").textContent = !n ? "Wallet offline" : n.connected ? `PQ devnet, chain ${n.chainId}` : "Not connected";
+  if (S && S.account) {
+    document.documentElement.style.setProperty("--acc", accentFor(S.account.address));
+    try { A = await api("/api/activity"); } catch { /* keep the last list */ }
+  }
+  document.title = S ? `${cap(S.name)}'s PQ Wallet` : "PQ Wallet";
+  if (!busy) render();
+}
+const cap = (s) => s ? s[0].toUpperCase() + s.slice(1) : s;
+
+// ---- screens ----
+function render() {
+  const v = $("view");
+  if (!S) { v.innerHTML = `<div class="screen center"><p>The wallet process is not running.</p><p class="muted small">Start it with infra/wallets.sh start ${"&lt;name&gt;"}.</p></div>`; return; }
+  if (screen === "network") return v.innerHTML = networkScreen();
+  if (!S.network.connected) { v.innerHTML = networkScreen(true); return; }
+  if (!S.account) { v.innerHTML = setupScreen(); return; }
+  v.innerHTML = { home: homeScreen, send: sendScreen, review: reviewScreen, receive: receiveScreen, job: jobScreen }[screen]();
+  if (screen === "send") { $("to").value = sendDraft.to; $("amt").value = sendDraft.amount; }
+}
+
+function homeScreen() {
+  const a = S.account;
+  return `<div class="screen">
+    <div class="who">${avatar(a.address)}<div><h1>${esc(S.name)}</h1>
+      <button class="addr-btn" type="button" data-copy="${esc(a.address)}" title="Copy address">${short(a.address)}, copy</button></div></div>
+    <div class="bal"><span class="amt">${eth(a.balanceWei)}</span><span class="unit">ETH</span></div>
+    <div class="actions">
+      <button class="act" type="button" data-go="send"><span class="circle">↑</span>Send</button>
+      <button class="act" type="button" data-go="receive"><span class="circle">↓</span>Receive</button>
+      <button class="act" type="button" data-do="faucet"><span class="circle">+</span>Add test ETH</button>
+    </div>
+    <div class="tabs" role="tablist">
+      <button class="tab" role="tab" type="button" data-tab="activity" aria-selected="${tab === "activity"}">Activity</button>
+      <button class="tab" role="tab" type="button" data-tab="keys" aria-selected="${tab === "keys"}">Keys</button>
+    </div>
+    ${tab === "activity" ? activityList() : keysList()}
+  </div>`;
+}
+
+function describe(r) {
+  const who = r.name && !/^(Account setup|Mempool stake|Test ETH faucet)$/.test(r.name) ? cap(r.name) : short(r.counterparty);
+  if (r.direction === "in") return r.name === "Account setup" ? "Account created" : r.name === "Test ETH faucet" ? "Test ETH added" : `Received from ${who}`;
+  return r.name === "Mempool stake" ? "Mempool stake" : `Sent to ${who}`;
+}
+function activityList() {
+  if (!A.length) return `<p class="empty">No activity yet. Add test ETH to get started.</p>`;
+  return `<ul class="list">${A.slice(0, 25).map((r) => `<li>
+    <span class="t">${esc(describe(r))}</span><span class="v ${r.direction === "in" ? "plus" : ""}">${r.direction === "in" ? "+" : "−"}${eth(r.wei)} ETH</span>
+    <span class="s">block ${r.block.toLocaleString("en-US")}</span><span class="s" style="text-align:right">${short(r.txHash)}</span></li>`).join("")}</ul>`;
+}
+function keysList() {
+  return `<div>${S.keys.map((k) => `<div class="key">
+      <strong>Key ${k.index + 1}</strong>${k.renewals ? `<span class="muted small">, renewed ${k.renewals}×</span>` : ""}
+      <div class="bar"><span style="width:${(100 * k.remaining / k.leaves).toFixed(1)}%"></span></div>
+      <div class="small muted">${k.remaining} of ${k.leaves} signatures left before it renews itself</div></div>`).join("")}
+    <p class="note">Your account is a smart contract guarded by three post-quantum keys stored on this computer. Every
+      payment is signed by two of them. Each key can sign ${S.keys[0] ? S.keys[0].leaves : 128} times, then renews
+      automatically. There is no seed phrase and no ECDSA key.</p></div>`;
+}
+
+function sendScreen() {
+  const cs = S.contacts.map((c) => `<button class="contact" type="button" data-to="${esc(c.address)}">${avatar(c.address)}${esc(c.name)}</button>`).join("");
+  return `<div class="screen"><button class="back" type="button" data-go="home">← Back</button><h2>Send ETH</h2>
+    <form id="send-form" novalidate>
+      <div class="field"><label class="f" for="to">To</label>
+        <input class="in mono" id="to" placeholder="0x…" autocomplete="off" spellcheck="false">
+        ${cs ? `<div class="contacts" aria-label="Other wallets on this computer">${cs}</div>` : ""}
+        <div class="err" id="to-err"></div></div>
+      <div class="field"><label class="f" for="amt">Amount</label>
+        <div class="amount-row"><input class="in" id="amt" placeholder="0.0" inputmode="decimal" autocomplete="off"><button class="max" type="button" id="max">Max</button></div>
+        <div class="small muted" style="margin-top:6px">Balance: ${eth(S.account.balanceWei)} ETH</div>
+        <div class="err" id="amt-err"></div></div>
+      <button class="btn" type="submit">Continue</button>
+    </form></div>`;
+}
+
+let quote = null;
+function reviewScreen() {
+  const to = sendDraft.to, c = S.contacts.find((x) => x.address.toLowerCase() === to.toLowerCase());
+  return `<div class="screen"><button class="back" type="button" data-go="send">← Edit</button><h2>Review</h2>
+    <div class="review">
+      <div class="r"><span class="k">From</span><span class="vv">${esc(cap(S.name))}<br><span class="muted small mono">${short(S.account.address)}</span></span></div>
+      <div class="r"><span class="k">To</span><span class="vv">${c ? esc(cap(c.name)) + "<br>" : ""}<span class="muted small mono">${short(to)}</span></span></div>
+      <div class="r"><span class="k">Amount</span><span class="vv"><strong>${eth(ethToWei(sendDraft.amount), 18)} ETH</strong></span></div>
+      <div class="r"><span class="k">Network fee</span><span class="vv">about ${quote ? eth(quote.feeWei, 5) : "…"} ETH</span></div>
+    </div>
+    <p class="pq">Two of your three post-quantum keys will sign this payment on this computer. The network checks both
+      signatures before your account pays any fee.</p>
+    <div class="btns"><button class="btn ghost" type="button" data-go="home">Cancel</button><button class="btn" type="button" data-do="confirm">Confirm</button></div></div>`;
+}
+
+function receiveScreen() {
+  const a = S.account.address;
+  return `<div class="screen recv"><button class="back" type="button" data-go="home" style="display:block">← Back</button>
+    ${avatar(a, "big")}<h2>Receive ETH</h2><p class="muted small">Share this address to receive ETH on chain ${S.network.chainId}.</p>
+    <code>${a.slice(2).match(/.{1,4}/g).map((g, i) => (i === 0 ? "0x" : "") + g).join(" ")}</code>
+    <button class="btn" type="button" data-copy="${esc(a)}">Copy address</button></div>`;
+}
+
+function setupScreen() {
+  const stale = S.staleAccount ? `<p class="small" style="color:var(--warn)">This wallet's previous account (${short(S.staleAccount)}) is not on the
+    connected network, which was probably restarted. Creating a wallet makes a new account; the old keys are archived.</p>` : "";
+  const infra = S.network.infra ? "" : `<p class="small" style="color:var(--bad)">This network has no PQ-Vault contracts yet. Run infra/local-net.sh up first.</p>`;
+  return `<div class="screen center">${avatar(hexOf(S.name), "big")}
+    <h2 style="margin-top:14px">Create ${esc(cap(S.name))}'s wallet</h2>
+    <p class="muted">Your account will be a smart contract guarded by three post-quantum keys kept on this computer.
+      Any two of them sign each payment, so there is no seed phrase to write down.</p>
+    ${stale}${infra}
+    <button class="btn" type="button" data-do="create" ${S.network.infra ? "" : "disabled"}>Create wallet</button>
+    <p class="small muted">Creating the account and adding 1 test ETH takes about 20 seconds.</p></div>`;
+}
+
+function networkScreen(forced) {
+  const n = S.network;
+  return `<div class="screen">${forced ? "" : `<button class="back" type="button" data-go="home">← Back</button>`}<h2>Network</h2>
+    ${n.connected ? `<p class="small" style="color:var(--plus)">Connected to chain ${n.chainId}, block ${n.block.toLocaleString("en-US")}.</p>`
+                  : `<p class="small" style="color:var(--bad)">Cannot reach a node at ${esc(n.rpc)}.</p>`}
+    <form id="net-form" novalidate>
+      <div class="field"><label class="f" for="rpc">Node RPC URL</label><input class="in mono" id="rpc" value="${esc(n.rpc)}" spellcheck="false"></div>
+      <div class="field"><label class="f" for="mp">Alt mempool URL</label><input class="in mono" id="mp" value="${esc(n.mempool)}" spellcheck="false">
+        <div class="small muted" style="margin-top:6px">Payments go to this ERC-8421 mempool. It must allow staked accounts more than 100,000 validation gas.</div></div>
+      <div class="err" id="net-err"></div>
+      <button class="btn" type="submit">Save and connect</button></form></div>`;
+}
+
+function jobScreen() {
+  const j = jobView;
+  const steps = j.steps.map((s, i) => `<li class="${s.err ? "err" : i === j.steps.length - 1 && j.running ? "now" : "done"}">${esc(s.text)}</li>`).join("");
+  let end = "";
+  if (!j.running) {
+    end = j.ok ? `<div class="big-done">${j.done}</div><div class="btns" style="grid-template-columns:1fr"><button class="btn" type="button" data-go="home">Back to wallet</button></div>`
+               : `<div class="btns" style="grid-template-columns:1fr"><button class="btn ghost" type="button" data-go="home">Back to wallet</button></div>`;
+  }
+  return `<div class="screen"><h2>${esc(j.title)}</h2><ul class="steps" aria-live="polite">${steps}</ul>${end}</div>`;
+}
+
+// ---- jobs ----
+const STEP = {
+  log: (e) => /^keys:/.test(e.text) ? "Generating your three post-quantum keys"
+    : /^account:/.test(e.text) ? "Creating your smart account on chain"
+    : /^done:/.test(e.text) ? "Added 1 test ETH"
+    : /^faucet:/.test(e.text) ? "Requesting test ETH from the devnet faucet" : null,
+  renew: () => "Renewing a key that is almost used up",
+  fallback: () => "A key is used up: signing with its backup key instead",
+  signing: () => "Signing with two of your keys",
+  simulated: (e) => e.ok ? "Checked: the network will accept it" : "The network would reject this payment",
+  submitting: () => "Sent to the mempool, waiting for a block",
+  included: (e) => `Confirmed in block ${e.block.toLocaleString("en-US")}`,
+};
+
+async function runJob(path, body, title, doneHtml) {
+  busy = true; screen = "job";
+  jobView = { title, steps: [{ text: "Starting…" }], running: true }; render();
+  let id;
+  try { id = (await api(path, body)).job; } catch (e) {
+    jobView = { title, steps: [{ text: e.message, err: true }], running: false, ok: false }; busy = false; render(); return;
+  }
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 900));
+    let j; try { j = await api("/api/jobs/" + id); } catch { continue; }
+    const steps = [];
+    for (const e of j.events) { const f = STEP[e.type]; const t = f && f(e); if (t && (!steps.length || steps[steps.length - 1].text !== t)) steps.push({ text: t }); }
+    if (j.state === "error") steps.push({ text: j.error, err: true });
+    jobView = { title, steps: steps.length ? steps : [{ text: "Working…" }], running: j.state === "running",
+                ok: j.state === "done", done: doneHtml };
+    render();
+    if (j.state !== "running") break;
+  }
+  busy = false;
+  await refresh();
+  if (screen === "job") render();
+}
+
+// ---- events ----
+document.addEventListener("click", async (ev) => {
+  const t = ev.target.closest("button"); if (!t) return;
+  if (t.id === "settings-btn" || t.id === "net-pill") { screen = "network"; return render(); }
+  if (t.dataset.go) { if (busy && screen === "job" && jobView && jobView.running) return; screen = t.dataset.go; return render(); }
+  if (t.dataset.tab) { tab = t.dataset.tab; return render(); }
+  if (t.dataset.copy) {
+    const prev = t.textContent;
+    try { await navigator.clipboard.writeText(t.dataset.copy); t.textContent = "Copied"; } catch { t.textContent = t.dataset.copy; }
+    setTimeout(() => { t.textContent = prev; }, 1500); return;
+  }
+  if (t.dataset.to) { $("to").value = t.dataset.to; sendDraft.to = t.dataset.to; return; }
+  if (t.id === "max") {
+    try { const q = await api("/api/quote"); $("amt").value = eth(q.maxSendWei, 18).replace(/,/g, ""); } catch { /* ignore */ } return;
+  }
+  const act = t.dataset.do;
+  if (act === "create") return runJob("/api/create", {}, `Creating ${cap(S.name)}'s wallet`,
+    `<p>Your wallet is ready.</p>`);
+  if (act === "faucet") return runJob("/api/faucet", {}, "Adding test ETH", `<div class="amt">+1 ETH</div><p class="muted">Test ETH added.</p>`);
+  if (act === "confirm") {
+    const wei = ethToWei(sendDraft.amount);
+    return runJob("/api/send", { to: sendDraft.to, wei: wei.toString() }, "Sending",
+      `<div class="amt">−${esc(eth(wei, 18))} ETH</div><p class="muted">Sent to ${esc((S.contacts.find((c) => c.address.toLowerCase() === sendDraft.to.toLowerCase()) || {}).name ? cap(S.contacts.find((c) => c.address.toLowerCase() === sendDraft.to.toLowerCase()).name) : short(sendDraft.to))}.</p>`);
+  }
+});
+
+document.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  if (ev.target.id === "send-form") {
+    const to = $("to").value.trim(), amt = $("amt").value.trim(), wei = ethToWei(amt);
+    sendDraft = { to, amount: amt };
+    $("to-err").textContent = !/^0x[0-9a-fA-F]{40}$/.test(to) ? "Enter a 0x address with 40 hex characters."
+      : to.toLowerCase() === S.account.address.toLowerCase() ? "That is your own address." : "";
+    let q = null; try { q = await api("/api/quote"); } catch { /* checked again by the wallet */ }
+    $("amt-err").textContent = wei === null || wei <= 0n ? "Enter an amount such as 0.01."
+      : q && wei > BigInt(q.maxSendWei) ? `You can send up to ${eth(q.maxSendWei, 6)} ETH (the rest covers the network fee).` : "";
+    if ($("to-err").textContent || $("amt-err").textContent) return;
+    quote = q; screen = "review"; return render();
+  }
+  if (ev.target.id === "net-form") {
+    try { await api("/api/network", { ethrex: $("rpc").value.trim(), sidecar: $("mp").value.trim() }); screen = "home"; await refresh(); }
+    catch (e) { $("net-err").textContent = e.message; }
+  }
+});
+
+refresh();
+setInterval(() => { if (!busy && (screen === "home" || !S || !S.network.connected)) refresh(); }, 4000);
+</script>
+</body>
+</html>

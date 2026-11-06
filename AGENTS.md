@@ -47,6 +47,9 @@ pqv/state.py                       DurableLeafStore (burn-before-sign), Anchored
 pqv/devnet.py                      CLI: deploy-infra, new-guardians, deploy-vault, transfer, rotate, recover, attack-stale-restore
 pqv/server.py, app/index.html      wallet website (127.0.0.1 only): /api/wallet, /api/plan, /api/send|rotate|recover
                                    run as background jobs polled at /api/jobs/<id>; keys never reach the browser
+pqv/wallet.py, app/wallet/         personal MetaMask-style wallet, one process per person (infra/wallets.sh start a b c);
+                                   state in .devnet/<net>/wallets/<name>/, shared contracts underneath (WalletNet);
+                                   activity from EIP-7708 Transfer logs (0xfff…fffe); faucet/deploy via the deployer (file lock)
 pqv/receipts.py                    regenerates docs/RECEIPTS.md from the chain
 pqv/_shim/Crypto/Hash/keccak.py    stdlib KECCAK-256 adapter so JARDIN's Python imports work without pycryptodome
 research/                          policies.py, sim.py, run_experiments.py, sweeps.py, crash_test.py, mempool_admission.py, REPORT.md, results/

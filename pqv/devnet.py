@@ -203,7 +203,7 @@ def new_guardians(net: Net, slot_h: int = SLOT_H, file: str = "guardians.json"):
     gs = [{"index": i, "master_sk": h(os.urandom(32)), "slots": [{"r": h(os.urandom(32)), "h": slot_h}]}
           for i in range(3)]
     net.save(file, gs)
-    print(f"created 3 guardians with {1 << slot_h}-leaf slots (secret keys in .devnet/{net.name}/{file})")
+    print(f"created 3 guardians with {1 << slot_h}-leaf slots (secret keys in {os.path.relpath(net.path(file), ROOT)})")
 
 
 class Guardian:
