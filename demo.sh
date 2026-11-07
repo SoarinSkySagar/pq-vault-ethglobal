@@ -4,7 +4,10 @@
 #   ./demo.sh                 same as ./demo.sh up
 #   ./demo.sh up [--fresh] [--no-lan] [--wallets "alice bob carol"]
 #   ./demo.sh status
-#   ./demo.sh stop [--chain]  stop the wallets and the explorer (--chain: also pause the network; `up` resumes it)
+#   ./demo.sh stop [--chain]  stop the wallets, the explorer and the tunnel (--chain: also pause the network; `up` resumes it)
+#   ./demo.sh tunnel [alice ...] [--explorer] [--url <your-ngrok-domain>]
+#                             expose wallets to the mobile app over ngrok (any network) and print each pairing QR code
+#   ./demo.sh app [--tunnel]  start the mobile app's dev server (mobile/, Expo); open it in Expo Go on the phone
 #
 # `up` is safe to re-run. It
 #   1. brings up the local EIP-8141 network: reuses a running one, resumes stopped containers after a Docker
@@ -249,6 +252,90 @@ summary() {
   echo "  ./demo.sh status | ./demo.sh stop [--chain]"
 }
 
+# ----------------------------------------------------------------------------- mobile app: ngrok tunnel + Expo
+TUNNEL_DIR="$LOCAL/tunnel"
+tunnel_running() { [ -f "$TUNNEL_DIR/ngrok.pid" ] && kill -0 "$(cat "$TUNNEL_DIR/ngrok.pid")" 2>/dev/null; }
+stop_tunnel() { if tunnel_running; then kill "$(cat "$TUNNEL_DIR/ngrok.pid")"; echo "tunnel: stopped"; fi; rm -f "$TUNNEL_DIR/ngrok.pid"; }
+
+tunnel_urls() {   # "<port> <public url>" for every https tunnel of the running ngrok agent(s)
+  local p
+  for p in 4040 4041 4042; do
+    curl -sf -m 2 "http://127.0.0.1:$p/api/tunnels" 2>/dev/null | python3 -c 'import json,re,sys
+for t in json.load(sys.stdin).get("tunnels", []):
+    m = re.search(r":(\d+)/?$", str(t.get("config", {}).get("addr", "")))
+    if m and t.get("public_url", "").startswith("https://"): print(m[1], t["public_url"])' 2>/dev/null || true
+  done
+}
+
+cmd_tunnel() {
+  local names=() explorer=0 url="" n port
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --explorer) explorer=1 ;;
+      --url) shift; url="${1:?--url needs your ngrok domain, e.g. you.ngrok-free.app}" ;;
+      -*) die "unknown option $1 (tunnel [alice ...] [--explorer] [--url <domain>])" ;;
+      *) names+=("$1") ;;
+    esac
+    shift
+  done
+  [ ${#names[@]} -gt 0 ] || names=(alice)
+  command -v ngrok >/dev/null || die "ngrok is not installed (https://ngrok.com/download), then: ngrok config add-authtoken <token>"
+  for n in "${names[@]}"; do
+    [ -f "$LOCAL/wallets/$n/server.port" ] && curl -sf -m 5 -o /dev/null "http://127.0.0.1:$(wallet_port "$n")/api/state" \
+      || die "wallet $n is not running: ./demo.sh up first"
+  done
+  [ -z "$url" ] || [ ${#names[@]} -eq 1 ] || die "--url names one domain: use it with a single wallet"
+  stop_tunnel >/dev/null
+  mkdir -p "$TUNNEL_DIR"
+  log "starting ngrok for ${names[*]}$([ $explorer = 1 ] && echo ' + explorer')"
+  if [ ${#names[@]} -eq 1 ] && [ $explorer = 0 ]; then
+    nohup ngrok http "$(wallet_port "${names[0]}")" ${url:+--url "$url"} --log stdout > "$TUNNEL_DIR/ngrok.log" 2>&1 &
+  else
+    {   # one agent, several tunnels (ngrok allows one agent session per account)
+      echo 'version: "3"'; echo 'tunnels:'
+      for n in "${names[@]}"; do echo "  $n: {proto: http, addr: $(wallet_port "$n")}"; done
+      [ $explorer = 0 ] || echo "  explorer: {proto: http, addr: $EXPLORER_PORT}"
+    } > "$TUNNEL_DIR/ngrok.yml"
+    local cfg; cfg="$(ngrok config check 2>&1 | sed -n 's/.*file at //p')"
+    nohup ngrok start --all ${cfg:+--config "$cfg"} --config "$TUNNEL_DIR/ngrok.yml" --log stdout > "$TUNNEL_DIR/ngrok.log" 2>&1 &
+  fi
+  echo $! > "$TUNNEL_DIR/ngrok.pid"
+  local i want=$(( ${#names[@]} + explorer )) urls=""
+  for i in $(seq 1 40); do
+    urls="$(tunnel_urls)"
+    [ "$(printf '%s\n' "$urls" | grep -c https)" -ge "$want" ] && break
+    tunnel_running || { tail -5 "$TUNNEL_DIR/ngrok.log" >&2; die "ngrok stopped (see $TUNNEL_DIR/ngrok.log)"; }
+    sleep 0.5
+  done
+  [ -n "$urls" ] || { tail -5 "$TUNNEL_DIR/ngrok.log" >&2; die "ngrok gave no public URL (see $TUNNEL_DIR/ngrok.log)"; }
+  for n in "${names[@]}"; do
+    port="$(wallet_port "$n")"
+    local pub code link
+    pub="$(printf '%s\n' "$urls" | awk -v p="$port" '$1 == p {print $2; exit}')"
+    [ -n "$pub" ] || { warn "$n: no tunnel came up (free ngrok plans limit endpoints; see $TUNNEL_DIR/ngrok.log)"; continue; }
+    code="$(cat "$LOCAL/wallets/$n/pair-code")"
+    link="$pub/#pair=$code"
+    echo
+    printf '\033[1m%s\033[0m  %s   pairing code \033[1m%s\033[0m\n' "$n" "$pub" "$code"
+    if command -v qrencode >/dev/null; then qrencode -t ansiutf8 -m 2 "$link"; else echo "  pairing link: $link"; fi
+  done
+  if [ $explorer = 1 ]; then
+    echo; echo "explorer  $(printf '%s\n' "$urls" | awk -v p="$EXPLORER_PORT" '$1 == p {print $2; exit}')"
+  fi
+  echo
+  echo "  In the PQ Wallet app: Scan QR code (or type the URL and the code). ./demo.sh stop also stops the tunnel."
+  echo "  The wallets still only need the pairing code: anyone with the URL alone gets 'not paired'."
+}
+
+cmd_app() {
+  command -v npm >/dev/null || die "Node.js/npm is needed for the mobile app's dev server"
+  cd "$ROOT/mobile"
+  [ -d node_modules ] || { log "installing the mobile app's packages (npm ci)"; npm ci --no-audit --no-fund; }
+  log "starting Expo: install Expo Go on the phone, then scan the QR code below"
+  echo "  (same Wi-Fi as this computer; otherwise ./demo.sh app --tunnel)"
+  exec npx expo start "$@"
+}
+
 # ----------------------------------------------------------------------------- commands
 cmd_up() {
   local fresh=0 lan=1 wallets="${DEMO_WALLETS:-alice bob carol}"
@@ -281,9 +368,11 @@ cmd_status() {
   else echo "mempool:  down"; fi
   infra/wallets.sh status | sed 's/^/wallet:   /'
   if explorer_running; then echo "explorer: http://127.0.0.1:$EXPLORER_PORT"; else echo "explorer: stopped"; fi
+  if tunnel_running; then tunnel_urls | sed 's/^/tunnel:   127.0.0.1:/; s/ / -> /'; else echo "tunnel:   off (./demo.sh tunnel)"; fi
 }
 
 cmd_stop() {
+  stop_tunnel
   infra/wallets.sh stop || true
   if explorer_running; then kill "$(cat "$LOCAL/explorer.pid")"; echo "explorer: stopped"; fi
   rm -f "$LOCAL/explorer.pid"
@@ -300,6 +389,8 @@ case "${1:-up}" in
   up)     [ $# -gt 0 ] && shift; cmd_up "$@" ;;
   status) cmd_status ;;
   stop)   shift; cmd_stop "${1:-}" ;;
+  tunnel) shift; cmd_tunnel "$@" ;;
+  app)    shift; cmd_app "$@" ;;
   -h|--help|help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0" ;;
-  *) die "usage: ./demo.sh [up [--fresh] [--no-lan] [--wallets \"a b c\"] | status | stop [--chain]]" ;;
+  *) die "usage: ./demo.sh [up [--fresh] [--no-lan] [--wallets \"a b c\"] | status | stop [--chain] | tunnel [names] | app]" ;;
 esac
