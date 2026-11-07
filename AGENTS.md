@@ -70,6 +70,10 @@ third_party/JARDIN, SPHINCS-       git submodules, pinned (JARDIN has no LICENSE
 
 ## 4. How to run
 
+Demo: `./demo.sh` (idempotent): network up or resumed (restarts the enclave's stopped el/cl/vc containers, same
+chain), [BUDGET-010] sidecar, wallets with `--lan`, missing accounts created, explorer on :8300, URLs + pairing
+codes printed. `./demo.sh status | stop [--chain] | up --fresh | up --no-lan | up --wallets "a b c"`.
+
 ```sh
 git submodule update --init
 (cd contracts && forge build && forge test)                    # 26 tests
@@ -147,7 +151,11 @@ Without the guardian secrets in `.devnet/public/` that vault cannot be operated;
   `vm.expectRevert` binds to the *next external call* (including view calls) — compute args first.
 - **FrameOps** is deployed from the *unoptimized* solc build (`pqv/devnet.py:frameops_initcode`) so bytecode maps 1:1
   to the reviewed opcode/stack order; forge's optimized artifact is not used for deployment.
-- **zsh**: never name a loop variable `path` (it clobbers `$PATH`).
+- **zsh**: never name a loop variable `path` (it clobbers `$PATH`); `c` is aliased in the user's shell, so don't name a
+  helper function `c` in commands run through it.
+- **Docker restart** stops every devnet container (exit 255): `./demo.sh up` resumes them; `infra/local-net.sh up`
+  would build a new chain and archive the wallets' state.
+- **`set -e` in demo.sh**: a function whose last statement is a false `[ … ] && cmd` returns 1 and silently ends the script.
 - **Phones / PWA**: a phone installs the app only from a secure origin, so the LAN listener is HTTPS and the phone must
   trust `.devnet/tls/ca.crt` (localhost via `adb reverse` counts as secure without it). iOS home-screen apps do not share
   Safari's storage: pair from inside the installed app (type the code). The LAN API locks for 60 s after 20 wrong codes.

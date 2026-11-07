@@ -48,6 +48,11 @@ Requirements: Foundry, Python ≥ 3.10 linked against OpenSSL ≥ 3.2 (for nativ
 Vault transactions need an ERC-8421 mempool with per-entity budgets ([BUDGET-010]); `infra/local-net.sh` brings
 up a local network with one (Kurtosis, Docker, x86_64).
 
+**Demo in one command:** `./demo.sh` brings up (or resumes, after a Docker restart) the local network and the
+[BUDGET-010] mempool, starts the alice / bob / carol wallets with phone access, creates any missing accounts, tops
+up low balances, starts the explorer, and prints every URL and pairing code. Re-runnable; `./demo.sh status`,
+`./demo.sh stop [--chain]`, `./demo.sh up --fresh` (new chain, ~10 min), `--no-lan`, `--wallets "a b c"`.
+
 ```sh
 # contracts + tests
 (cd contracts && forge build && forge test)
