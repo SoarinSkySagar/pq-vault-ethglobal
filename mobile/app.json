@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "PQ Wallet",
+    "slug": "pq-wallet",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#FFFFFF",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "dev.pqvault.wallet"
+    },
+    "android": {
+      "package": "dev.pqvault.wallet",
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "PQ Wallet uses the camera to scan pairing and address QR codes.",
+          "recordAudioAndroid": false
+        }
+      ]
+    ]
+  }
+}
