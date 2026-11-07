@@ -35,6 +35,7 @@ contracts/          Foundry project: PQVault, PQVaultFactory, LeafLedger, PQVaul
 pqv/                Python toolkit: frame-tx codec, JARDIN key wrapper, leaf-state stores, devnet driver, UI server
 app/                Wallet website: balance, send with two guardians (shown frame by frame), guardian key health
                     as 128-leaf grids, renew / replace guardians, activity. No external scripts, fonts or trackers
+mobile/             PQ Wallet phone app (React Native / Expo): a remote for the personal wallets, keys stay on the computer
 research/           Simulator, crash experiment, results/, REPORT.md
 infra/              local-net.sh: one-command local network (Kurtosis ethrex eip8141-tracer + Lighthouse + skandha);
                     sidecar-budget010/ (ERC-8421 per-entity budgets for the skandha sidecar)
@@ -124,6 +125,25 @@ signing stay in the wallet process on the computer, and every API call from the 
 code (20 wrong codes lock the LAN API for a minute). Android over USB needs no certificate or code:
 `adb reverse tcp:8201 tcp:8201`, then open `http://localhost:8201` on the phone. The loopback listener on
 `127.0.0.1` is unchanged. Icons: `python3 infra/make_app_icons.py`.
+
+**Mobile app (React Native / Expo, from any network).** `mobile/` is a native app for the same wallets: balance,
+send with the fee and why, receive (QR), keys, shared vaults (accept, propose, approve), settings for the node RPC
+and alt-mempool URLs. It runs in Expo Go, so no Android Studio or Xcode is needed. The chain and the wallets keep
+running on this computer; ngrok exposes a wallet to the phone:
+
+```sh
+./demo.sh                      # network, mempool, wallets, explorer
+./demo.sh tunnel alice         # ngrok https URL for alice + a pairing QR code in the terminal
+                               # (--url <your-ngrok-domain> for a URL that survives restarts; --explorer; several names)
+./demo.sh app                  # Expo dev server: scan its QR with Expo Go (same Wi-Fi), or ./demo.sh app --tunnel
+```
+
+In the app, choose **Scan QR code** and scan the pairing QR (it is also on the wallet's **Phone** screen while the
+tunnel runs), or type the URL and the code. The keys stay on this computer: JARDIN signing exists only in Python, and
+reimplementing it on the phone would be custom cryptography. Requests that arrive through a tunnel need the pairing
+code even though ngrok delivers them to `127.0.0.1`: the wallet treats a request as remote if it carries forwarding
+headers or a Host other than localhost. Settings in the app change the wallet URL (a restarted free ngrok tunnel
+gets a new one) and the node RPC / mempool URLs that the wallet computer uses. See [mobile/README.md](mobile/README.md).
 
 Full local-devnet bring-up (including the native arm64 ethrex build for Apple Silicon): see
 [research/REPORT.md §10](research/REPORT.md#10-reproduce).

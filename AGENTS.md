@@ -23,13 +23,13 @@ Hard rules the user set (keep them):
 | Area | State |
 |---|---|
 | Contracts (`contracts/src`) | 2-of-3 `PQVault`, three frames only: VERIFY (guardian A) + VERIFY (guardian B) + SENDER (consume both leaves, run batch); `PQVaultFactory`, `LeafLedger`, `PQVaultFrameOps.yul` (introspection with `maxCopy`). Foundry: **26/26 pass** |
-| Python toolkit (`pqv/`) | frame-tx codec (matches ethrex golden vector), JARDIN wrapper, leaf stores, three-frame devnet driver, UI server, receipts generator. **34/34 unittest pass** |
+| Python toolkit (`pqv/`) | frame-tx codec (matches ethrex golden vector), JARDIN wrapper, leaf stores, three-frame devnet driver, UI server, receipts generator. **44/44 unittest pass** |
 | Alt mempool | `infra/sidecar-budget010/`: ERC-8421 [BUDGET-010] per-entity budgets for the workshop sidecar (patch, 7 new tests, 393/393 executor tests pass, image build). Draft upstream PR text in its README, **not submitted** |
 | Public hackathon devnet (chain 1337) | **No longer a target.** Historical receipts of the original two-frame design (`docs/RECEIPTS.md`). A predecessor of the current contract was deployed there 2026-11-06 (vault `0x9635f90861b370f6bd28fd98ddb1c1ae470b880f`; secrets only in `.devnet/public/` on Sagar's machine): its gateway admitted a three-frame tx but included nothing in 15 min (REPORT §8.1) |
 | Local network (`infra/local-net.sh`) | **The target.** One command: Kurtosis ethrex eip8141-tracer + Lighthouse + skandha sidecar ([BUDGET-010] or stock). Current run: `docs/RECEIPTS-local.md` (transfers incl. SPX, rotation, recovery, attack; stock/unstaked rejections). Older runs (superseded code) are in git history and `.devnet/local/archive-*` |
 | Research | `research/REPORT.md` complete (§1–10), results in `research/results/*.json|md` |
 | Demo | `demo/pq-vault-demo.mp4` (2:55), `demo/NARRATION.md`, `docs/DEMO.md` |
-| UI | `app/index.html` served by `python -m pqv.server <network>`; personal wallets `app/wallet/` (installable mobile app, phones over LAN via `infra/wallets.sh start --lan`) |
+| UI | `app/index.html` served by `python -m pqv.server <network>`; personal wallets `app/wallet/` (installable mobile app, phones over LAN via `infra/wallets.sh start --lan`); native phone app `mobile/` (Expo, over ngrok: `./demo.sh tunnel`, `./demo.sh app`) |
 
 ## 3. Repo map
 
@@ -54,6 +54,9 @@ pqv/wallet.py, app/wallet/         personal MetaMask-style wallet, one process p
 pqv/lan.py                         phone access (`wallets.sh start --lan`, `wallets.sh pair <name>`): 2nd listener on port+1000,
                                    HTTPS from a per-machine devnet CA (.devnet/tls/, openssl CLI, RSA), pairing code per wallet
                                    (wallets/<name>/pair-code, Bearer header on every LAN /api/ call); phones never hold keys
+mobile/                            PQ Wallet phone app (React Native, Expo SDK 58, runs in Expo Go): remote for pqv/wallet.py
+                                   over an ngrok tunnel; pairing code in expo-secure-store; App.tsx + src/{api,format,ui}.ts(x)
+                                   + src/screens/. Keys never on the phone (JARDIN is Python-only; a JS port = custom crypto)
 pqv/explorer.py, app/explorer/     block explorer (:8300) that decodes frame txs: frames (mode, scope, call, gas, logs),
                                    signature entries (guardian, compact/SPX, leaf), named addresses; background indexer
 pqv/multisig.py                    shared 2-of-3 vaults between wallets: invite/join/deploy, propose/approve/submit; shared
@@ -77,7 +80,7 @@ codes printed. `./demo.sh status | stop [--chain] | up --fresh | up --no-lan | u
 ```sh
 git submodule update --init
 (cd contracts && forge build && forge test)                    # 26 tests
-python3.12 -m unittest discover -s tests -t .                  # 34 tests (Ubuntu: use the uv python3.13, see §6)
+python3.12 -m unittest discover -s tests -t .                  # 44 tests (Ubuntu: use the uv python3.13, see §6)
 python3.12 research/run_experiments.py --seeds 20              # ~10 min
 python3.12 research/sweeps.py --seeds 10
 python3.12 research/crash_test.py --kills 100
@@ -159,6 +162,16 @@ Without the guardian secrets in `.devnet/public/` that vault cannot be operated;
 - **Phones / PWA**: a phone installs the app only from a secure origin, so the LAN listener is HTTPS and the phone must
   trust `.devnet/tls/ca.crt` (localhost via `adb reverse` counts as secure without it). iOS home-screen apps do not share
   Safari's storage: pair from inside the installed app (type the code). The LAN API locks for 60 s after 20 wrong codes.
+- **Tunnels (ngrok) reach the loopback listener**: requests arrive from 127.0.0.1, so `H._remote` treats any request
+  with forwarding headers (X-Forwarded-For/-Host, Forwarded, X-Real-IP) or a Host other than localhost/127.0.0.1/[::1]
+  as a phone and requires the pairing code (one shared `GATE`). `adb reverse` keeps Host localhost, so it stays local.
+  The wallet finds its tunnel via ngrok's agent API (127.0.0.1:4040-4042) for `/api/pair`. Never add CORS headers to
+  the wallet server: the missing CORS is what keeps other web pages away from a local wallet.
+- **Mobile app**: Expo Go runs only the newest SDK, so keep `mobile/` on it (`npx expo install --fix`); use
+  `npx expo install` for packages. Free ngrok: one agent per account (`./demo.sh tunnel a b` runs several tunnels in
+  one agent), URL changes on restart unless `--url <static domain>`. Starting ngrok was blocked by the auto-mode
+  classifier ("External Ingress Tunnel"): the user runs `./demo.sh tunnel`. Screens were checked with the web build in
+  headless Chrome (`--disable-web-security` to stand in for React Native, which has no CORS).
 - **Headless Chrome on this Ubuntu box**: AppArmor blocks Chrome's sandbox; the puppeteer Chrome in `~/.cache/puppeteer`
   runs with `--no-sandbox` (local pages only). Node 24's built-in WebSocket is enough to drive it over CDP.
 - Tool permissions: installing/running external npm code (e.g. `yarn install` in vendored repos, `npx hyperframes`)
