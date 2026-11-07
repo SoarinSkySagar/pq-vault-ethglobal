@@ -64,7 +64,7 @@ cmd_pair() {
   port="$(cat "$RUN/$name/server.port")"
   [ -f "$RUN/$name/lan.json" ] || { echo "$name does not serve phones; restart it with: $0 start --lan $name" >&2; exit 1; }
   local link
-  link="$(curl -sf "http://127.0.0.1:$port/api/pair" | sed -n 's/.*"link": *"\([^"]*\)".*/\1/p')"
+  link="$(curl -sf "http://127.0.0.1:$port/api/pair" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("link") or "")' 2>/dev/null)"
   [ -n "$link" ] || { echo "$name: could not read the pairing link (is it running?)" >&2; exit 1; }
   echo "$name on a phone (same Wi-Fi):"
   echo "  1. once per phone, install the devnet CA: ${link%%/#*}/ca.crt  (file: .devnet/tls/ca.crt)"
