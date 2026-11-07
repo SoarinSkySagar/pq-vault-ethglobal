@@ -4,7 +4,9 @@
     infra/wallets.sh start [--lan] alice bob carol      # several wallets, one port each
 
 The page (app/wallet/) is an installable mobile web app. With --lan a second listener serves it over HTTPS to phones
-on the same network; its /api/ calls need the wallet's pairing code (pqv/lan.py). Keys never leave this process.
+on the same network; its /api/ calls need the wallet's pairing code (pqv/lan.py). The phone app (mobile/) reaches the
+loopback listener through a tunnel (ngrok, ./demo.sh tunnel); such forwarded requests need the code too (H._remote).
+Keys never leave this process.
 
 Each wallet is its own account: a 2-of-3 PQ-Vault smart account whose three JARDIN keys live on this computer
 (.devnet/<network>/wallets/<name>/). It shares the network's contracts (factory, LeafLedger, verifiers) with every
@@ -19,7 +21,7 @@ throwaway devnet deployer (the only ECDSA key in the project), which also pays f
     POST /api/send {to, wei}      pay, signed by the two keys with the most leaves left             -> {job}
     POST /api/network {ethrex, sidecar}   connect to another node / mempool
     GET  /api/jobs/<id>
-    GET  /api/pair                (loopback only) phone URL, pairing code and QR code, if --lan is on
+    GET  /api/pair                (loopback only) pairing code; LAN URL + QR if --lan; ngrok tunnel URL + QR if one runs
 
 Shared 2-of-3 multisig vaults with other wallets (pqv/multisig.py):
     POST /api/vaults {name, guardians: [two other wallet names]}       create; invites the other two
@@ -65,6 +67,9 @@ GAS_NEW_STORAGE = 97_920       # state gas per storage slot created: a slot's fi
 MAX_COST_RESERVE = 5 * 10**15  # the account must hold value + the tx's maximum cost when payment is approved
 W = None
 LAN = None                     # {"url", "code", "port"} when phones may connect (--lan)
+GATE = None                    # pairing-code check for every request from a phone (LAN listener or a tunnel)
+PORT = None                    # this wallet's loopback port (a tunnel such as ngrok forwards to it)
+NGROK_APIS = [f"http://127.0.0.1:{p}/api/tunnels" for p in (4040, 4041, 4042)]  # ngrok agents' local API
 ACCENTS = ["#2F6F5E", "#3B5BA9", "#7C4A9E", "#2C7DA0", "#6A7B2E", "#A04E68"]  # same as app/wallet/index.html
 CTYPES = {"html": "text/html; charset=utf-8", "js": "text/javascript; charset=utf-8", "css": "text/css; charset=utf-8",
           "svg": "image/svg+xml", "png": "image/png", "webmanifest": "application/manifest+json"}
@@ -317,6 +322,37 @@ def op_send(to, wei):
     return dv.cmd_transfer(W, to, wei, tuple(g.i for g in pick), gs=gs, label=f"send to {to}")
 
 
+# ----------------------------------------------------------------------------- phones
+def tunnel_url():
+    """Public HTTPS URL of an ngrok tunnel to this wallet's port, if one runs (ngrok's local agent API)."""
+    import urllib.request
+    for api in NGROK_APIS:
+        try:
+            with urllib.request.urlopen(api, timeout=0.5) as r:
+                tunnels = json.load(r).get("tunnels", [])
+        except Exception:
+            continue
+        for t in tunnels:
+            addr = str(t.get("config", {}).get("addr", ""))
+            if t.get("public_url", "").startswith("https://") and re.search(rf"(^|:){PORT}/?$", addr):
+                return t["public_url"].rstrip("/")
+    return None
+
+
+def pair_info():
+    """How a phone reaches this wallet: over a tunnel (any network, used by the mobile app) and/or the LAN listener.
+    Each link is <url>/#pair=<code>: the mobile app scans it, a phone browser opens it as the web app."""
+    code = lan.pairing_code(W.dir)
+    out = {"enabled": bool(LAN), "code": code, "tunnel": None}
+    t = tunnel_url()
+    if t:
+        out["tunnel"] = {"url": t, "link": f"{t}/#pair={code}", "qr": lan.qr_svg(f"{t}/#pair={code}")}
+    if LAN:
+        link = f"{LAN['url']}/#pair={code}"
+        out.update({"url": LAN["url"], "link": link, "qr": lan.qr_svg(link), "caUrl": LAN["url"] + "/ca.crt"})
+    return out
+
+
 # ----------------------------------------------------------------------------- HTTP
 def manifest():
     a = account()
@@ -330,16 +366,28 @@ def manifest():
             "icons": icons}
 
 
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+FORWARD_HEADERS = ("x-forwarded-for", "x-forwarded-host", "forwarded", "x-real-ip")
+
+
 class H(srv.H):
     @property
-    def _lan(self):
-        return getattr(self.server, "gate", None) is not None
+    def _remote(self):
+        """True for a phone: the LAN listener, or a request a tunnel (ngrok, a reverse proxy) forwarded to loopback.
+        A tunnel's requests come from 127.0.0.1 but carry forwarding headers or the tunnel's public Host name."""
+        if getattr(self.server, "lan", False):
+            return True
+        if any(self.headers.get(h) for h in FORWARD_HEADERS):
+            return True
+        host = (self.headers.get("host") or "").strip().lower()
+        host = host.split("]")[0] + "]" if host.startswith("[") else host.split(":")[0]
+        return host not in LOCAL_HOSTS
 
     def _denied(self):
-        """None if the request may proceed; on the LAN listener every /api/ call needs the pairing code."""
-        if not self._lan or not self.path.startswith("/api/"):
+        """None if the request may proceed; from a phone every /api/ call needs the pairing code."""
+        if not self._remote or not self.path.startswith("/api/"):
             return None
-        r = self.server.gate.check(self.headers.get("authorization", ""))
+        r = GATE.check(self.headers.get("authorization", ""))
         if r == "ok":
             return None
         if r == "locked":
@@ -353,15 +401,11 @@ class H(srv.H):
         path = self.path.split("?")[0].split("#")[0]
         try:
             if path == "/api/state":
-                return self._send(200, dict(state(), remote=self._lan))
+                return self._send(200, dict(state(), remote=self._remote))
             if path == "/api/pair":
-                if self._lan:
+                if self._remote:
                     return self._send(404, {"error": "not found"})
-                if not LAN:
-                    return self._send(200, {"enabled": False})
-                link = f"{LAN['url']}/#pair={LAN['code']}"
-                return self._send(200, {"enabled": True, "url": LAN["url"], "code": LAN["code"], "link": link,
-                                        "qr": lan.qr_svg(link), "caUrl": LAN["url"] + "/ca.crt"})
+                return self._send(200, pair_info())
             if path == "/manifest.webmanifest":
                 return self._send(200, json.dumps(manifest()).encode(), CTYPES["webmanifest"])
             if path == "/ca.crt":
@@ -467,7 +511,7 @@ class H(srv.H):
 
 
 def main():
-    global W
+    global W, GATE, PORT
     ap = argparse.ArgumentParser()
     ap.add_argument("name", help="wallet name (lowercase letters, digits, dashes)")
     ap.add_argument("--port", type=int, default=8201)
@@ -478,6 +522,7 @@ def main():
     if not re.match(r"^[a-z0-9][a-z0-9-]{0,23}$", a.name):
         raise SystemExit("wallet name: lowercase letters, digits and dashes, up to 24 characters")
     W = WalletNet(a.network, a.name)
+    GATE, PORT = lan.Gate(lan.pairing_code(W.dir)), a.port
     httpd = ThreadingHTTPServer(("127.0.0.1", a.port), H)
     print(f"{a.name}'s PQ-Vault wallet on http://127.0.0.1:{a.port}", flush=True)
     lan_file = os.path.join(W.dir, "lan.json")
@@ -502,7 +547,7 @@ def start_lan(port, lan_file):
     https = ThreadingHTTPServer(("0.0.0.0", port), type("HLan", (H,), {"timeout": 30}))
     # handshake lazily in each connection's own thread, so one slow phone cannot stall accept()
     https.socket = ctx.wrap_socket(https.socket, server_side=True, do_handshake_on_connect=False)
-    https.gate = lan.Gate(lan.pairing_code(W.dir))
+    https.lan = True
     LAN = {"url": f"https://{ips[0]}:{port}", "code": lan.pairing_code(W.dir), "port": port, "ips": ips}
     with open(lan_file, "w") as f:
         json.dump({"url": LAN["url"], "port": port, "ips": ips}, f)
