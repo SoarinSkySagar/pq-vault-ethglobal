@@ -394,6 +394,14 @@ function sendScreen() {
 }
 
 let quote = null;
+function feeWhy() {  // why this payment costs more than the usual ~380k gas, from the wallet's send plan
+  if (!quote || !quote.plan) return "";
+  const why = [];
+  if (quote.plan.some((t) => t.what === "renew")) why.push("renews a nearly used-up key first (an extra transaction)");
+  if (quote.plan.some((t) => t.kinds.includes("stateless"))) why.push("a used-up key signs with its larger backup signature");
+  if (quote.plan.some((t) => t.newStorage)) why.push("first use of a key records it on chain once");
+  return `<br><span class="muted small">${(quote.gas || 0).toLocaleString("en-US")} gas${why.length ? "; " + esc(why.join("; ")) : ""}</span>`;
+}
 function reviewScreen() {
   const to = sendDraft.to, c = S.contacts.find((x) => x.address.toLowerCase() === to.toLowerCase());
   return `<div class="screen"><button class="back" type="button" data-go="send">← Edit</button><h2>Review</h2>
@@ -401,7 +409,7 @@ function reviewScreen() {
       <div class="r"><span class="k">From</span><span class="vv">${esc(cap(S.name))}<br><span class="muted small mono">${short(S.account.address)}</span></span></div>
       <div class="r"><span class="k">To</span><span class="vv">${c ? esc(cap(c.name)) + "<br>" : ""}<span class="muted small mono">${short(to)}</span></span></div>
       <div class="r"><span class="k">Amount</span><span class="vv"><strong>${eth(ethToWei(sendDraft.amount), 18)} ETH</strong></span></div>
-      <div class="r"><span class="k">Network fee</span><span class="vv">about ${quote ? eth(quote.feeWei, 5) : "…"} ETH</span></div>
+      <div class="r"><span class="k">Network fee</span><span class="vv">about ${quote ? eth(quote.feeWei, 5) : "…"} ETH${feeWhy()}</span></div>
     </div>
     <p class="pq">Two of your three post-quantum keys will sign this payment ${S.remote ? "on your wallet computer" : "on this computer"}. The network checks both
       signatures before your account pays any fee.</p>
