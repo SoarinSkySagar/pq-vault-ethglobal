@@ -13,7 +13,7 @@ throwaway devnet deployer (the only ECDSA key in the project), which also pays f
 
     GET  /api/state               account, balance, network connection, keys, contacts
     GET  /api/activity            received and sent ETH (EIP-7708 transfer logs), newest first
-    GET  /api/quote               fee estimate and the most that can be sent
+    GET  /api/quote               fee estimate (send plan: renewals, key kinds, gas) and the most that can be sent
     POST /api/create              create this wallet's account (keys + smart account + test ETH)  -> {job}
     POST /api/faucet              1 test ETH from the devnet faucet                                 -> {job}
     POST /api/send {to, wei}      pay, signed by the two keys with the most leaves left             -> {job}
@@ -54,7 +54,14 @@ TRANSFER = "0x" + keccak256(b"Transfer(address,address,uint256)").hex()
 INFRA = ("staking", "frameOps", "forsVerifier", "spxVerifier", "factory", "ledger")
 FAUCET_WEI = 10**18
 CREATE_FUND_ETH, CREATE_STAKE_ETH = 1.0, 0.02
-EST_GAS = 380_000              # billed gas of a compact+compact transfer (docs/RECEIPTS-local.md)
+# Billed gas of a wallet payment, fitted to every frame tx on the local chain (26 receipts: transfers, rotations,
+# compact and SPX approvals, slot heights 2 and 7; all reproduced exactly). These txs are billed at the calldata floor,
+# which grows linearly with the signature bytes, plus state gas for each storage slot they create.
+GAS_TWO_SPX = 862_713          # transfer approved by two stateless (SPX) signatures
+GAS_COMPACT_SAVES_H2 = 246_720  # each compact approval in place of an SPX one, slot height 2 ...
+GAS_COMPACT_PER_LEVEL = 1_024   # ... and 1,024 less per extra tree level (16 more bytes of auth path)
+GAS_ROTATION_EXTRA = 22_528    # a rotation's two calls (registerSlot + revokeSlot) over a transfer's one
+GAS_NEW_STORAGE = 97_920       # state gas per storage slot created: a slot's first leaf in the LeafLedger, a new slot
 MAX_COST_RESERVE = 5 * 10**15  # the account must hold value + the tx's maximum cost when payment is approved
 W = None
 LAN = None                     # {"url", "code", "port"} when phones may connect (--lan)
@@ -214,12 +221,54 @@ def activity(a=None, created=None):
     return rows
 
 
+def frame_tx_gas(signers, new_storage=0, rotation=False):
+    """Billed gas of one vault frame tx. signers: [("compact", slot_height) | ("stateless", None)] x 2."""
+    g = GAS_TWO_SPX + (GAS_ROTATION_EXTRA if rotation else 0) + GAS_NEW_STORAGE * new_storage
+    for kind, h in signers:
+        if kind == "compact":
+            g -= GAS_COMPACT_SAVES_H2 - GAS_COMPACT_PER_LEVEL * (h - 2)
+    return g
+
+
+def send_plan(gs=None):
+    """The transactions a payment will send, mirroring op_send and dv.vault_call: the two keys with the most leaves
+    left approve; a nearly used-up key is first renewed (a rotation approved by the other two); a key with no
+    compact leaf left signs stateless. Returns [{"what", "gas", "guardians", "kinds"}]."""
+    gs = gs or _guardians()
+    rem = {g.i: g.remaining_leaves() for g in gs}
+    height = {g.i: g.slot().h for g in gs}
+    q_max = {g.i: g.slot().q_max for g in gs}
+    unused = {g.i: W.ledger_hwm(g.slot().slot_id) == 0 for g in gs}  # first leaf creates the ledger entry
+    pick = sorted(sorted(gs, key=lambda g: (-rem[g.i], g.i))[:2], key=lambda g: g.i)
+    plan = []
+
+    def tx(what, idx, rotation=False, extra_storage=0):
+        kinds = ["stateless" if rem[i] <= 0 else "compact" for i in idx]
+        new = extra_storage + sum(1 for i, k in zip(idx, kinds) if k == "compact" and unused[i])
+        plan.append({"what": what, "guardians": list(idx), "kinds": kinds, "newStorage": new,
+                     "gas": frame_tx_gas([(k, height[i]) for i, k in zip(idx, kinds)], new, rotation)})
+        for i, k in zip(idx, kinds):
+            if k == "compact":
+                rem[i] -= 1
+                unused[i] = False
+
+    for g in pick:
+        if dv.rotation_due(rem[g.i], q_max[g.i]):
+            # registerSlot stores the new slot; revoking a never-used old slot creates its ledger entry too
+            tx("renew", dv._others(g.i), rotation=True, extra_storage=1 + (1 if unused[g.i] else 0))
+            rem[g.i], unused[g.i] = q_max[g.i], True
+    tx("payment", [g.i for g in pick])
+    return plan
+
+
 def quote():
     a = account()
     base = int(rpc.eth("eth_getBlockByNumber", ["latest", False])["baseFeePerGas"], 16)
-    fee = EST_GAS * (base + 10**9)
     bal = int(rpc.eth("eth_getBalance", [a, "latest"]), 16) if a else 0
-    return {"feeWei": str(fee), "maxSendWei": str(max(0, bal - MAX_COST_RESERVE))}
+    plan = send_plan() if a else [{"what": "payment", "gas": frame_tx_gas([("compact", dv.SLOT_H)] * 2), "kinds": []}]
+    gas = sum(t["gas"] for t in plan)
+    return {"feeWei": str(gas * (base + 10**9)), "gas": gas, "plan": plan,
+            "maxSendWei": str(max(0, bal - MAX_COST_RESERVE))}
 
 
 # ----------------------------------------------------------------------------- operations (background jobs)
