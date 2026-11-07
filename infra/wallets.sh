@@ -72,6 +72,7 @@ cmd_pair() {
   echo "  pairing code: $(cat "$RUN/$name/pair-code")"
   command -v qrencode >/dev/null && qrencode -t ansiutf8 -m 2 "$link"
   echo "Android over USB instead (no certificate, no code): adb reverse tcp:$port tcp:$port, then open http://localhost:$port"
+  echo "The PQ Wallet app (mobile/) from any network: ./demo.sh tunnel $name"
 }
 
 cmd_status() {
