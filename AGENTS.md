@@ -200,4 +200,4 @@ Without the guardian secrets in `.devnet/public/` that vault cannot be operated;
 - Regenerate, don't hand-edit: `docs/RECEIPTS.md` (`pqv.receipts`), `research/results/*` (scripts), video (`demo/build_demo.py`).
 - Every new claim in the report needs a script that produces it; record failed experiments in REPORT §9.
 - Keep upstream code unmodified; attribute anything copied (MIT only).
-- Commits end with the attribution line the harness provides; push only when the user asks.
+- Commits: author Sagar Rana only, no AI co-author or session trailers; push only when the user asks.
